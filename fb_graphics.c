@@ -1,6 +1,5 @@
 // Full C-based minimal phone "OS" with framebuffer UI and touch support (evdev based)
-// This version replaces keypress detection with touchscreen input detection (e.g., from /dev/input/eventX)
-// Apps: Home screen + Clock + Bounce + Color Cycle, switchable by touch
+// This version uses normalized coordinates for touch and verifies device capabilities
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +36,8 @@ struct {
     struct fb_fix_screeninfo finfo;
     int input_fd;
     AppMode mode;
+    int abs_x_min, abs_x_max;
+    int abs_y_min, abs_y_max;
 } state;
 
 volatile int running = 1;
@@ -93,7 +94,9 @@ void draw_bounce(uint64_t frame) {
     fill_rect(x, y, 100, 100, COLOR_GREEN);
 }
 
-void handle_touch(int x, int y) {
+void handle_touch(int x_raw, int y_raw) {
+    int x = (x_raw - state.abs_x_min) * WIDTH / (state.abs_x_max - state.abs_x_min);
+    int y = (y_raw - state.abs_y_min) * HEIGHT / (state.abs_y_max - state.abs_y_min);
     if (state.mode == APP_HOME) {
         if (y > 300 && y < 600) {
             if (x > 100 && x < 400) state.mode = APP_CLOCK;
@@ -107,14 +110,15 @@ void handle_touch(int x, int y) {
 
 void poll_input() {
     struct input_event ev;
-    int x = -1, y = -1;
+    static int last_x = -1, last_y = -1;
     while (read(state.input_fd, &ev, sizeof(ev)) > 0) {
         if (ev.type == EV_ABS) {
-            if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X) x = ev.value;
-            if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y) y = ev.value;
+            if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X) last_x = ev.value;
+            if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y) last_y = ev.value;
         }
-        if (ev.type == EV_KEY && ev.code == BTN_TOUCH && ev.value == 0 && x >= 0 && y >= 0) {
-            handle_touch(x, y);
+        if (ev.type == EV_KEY && ev.code == BTN_TOUCH && ev.value == 0 && last_x >= 0 && last_y >= 0) {
+            handle_touch(last_x, last_y);
+            last_x = last_y = -1;
         }
     }
 }
@@ -129,6 +133,15 @@ int find_touchscreen() {
             snprintf(path, sizeof(path), "/dev/input/%s", ent->d_name);
             int fd = open(path, O_RDONLY | O_NONBLOCK);
             if (fd < 0) continue;
+            struct input_absinfo abs;
+            if (ioctl(fd, EVIOCGABS(ABS_X), &abs) == 0) {
+                state.abs_x_min = abs.minimum;
+                state.abs_x_max = abs.maximum;
+            }
+            if (ioctl(fd, EVIOCGABS(ABS_Y), &abs) == 0) {
+                state.abs_y_min = abs.minimum;
+                state.abs_y_max = abs.maximum;
+            }
             char name[256];
             ioctl(fd, EVIOCGNAME(sizeof(name)), name);
             if (strstr(name, "touch") || strstr(name, "Touch")) {
