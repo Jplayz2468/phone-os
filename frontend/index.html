@@ -33,14 +33,27 @@
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
-    const particles = Array.from({ length: 300 }, () => ({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      r: Math.random() * 3 + 1,
-      dx: Math.random() * 2 - 1,
-      dy: Math.random() * 2 - 1,
-      hue: Math.random() * 360
-    }));
+    let imageData = ctx.createImageData(canvas.width, canvas.height);
+    let data = imageData.data;
+
+    let angle = 0;
+    function generateNoiseFrame(time) {
+      const w = canvas.width;
+      const h = canvas.height;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const value =
+            128 +
+            127 * Math.sin(x * 0.01 + time * 0.002) * Math.cos(y * 0.01 + time * 0.002);
+          data[i] = (value + angle) % 255;        // R
+          data[i + 1] = (value * 0.8) % 255;      // G
+          data[i + 2] = (255 - value) % 255;      // B
+          data[i + 3] = 255;                      // A
+        }
+      }
+      angle += 0.5;
+    }
 
     let lastTime = performance.now();
     let frames = 0;
@@ -55,23 +68,8 @@
         document.getElementById("fps").innerText = `FPS: ${fps}`;
       }
 
-      ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      for (let p of particles) {
-        ctx.beginPath();
-        ctx.fillStyle = `hsl(${p.hue}, 100%, 50%)`;
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fill();
-
-        p.x += p.dx;
-        p.y += p.dy;
-        p.hue += 1;
-
-        if (p.x < 0 || p.x > canvas.width) p.dx *= -1;
-        if (p.y < 0 || p.y > canvas.height) p.dy *= -1;
-      }
-
+      generateNoiseFrame(now);
+      ctx.putImageData(imageData, 0, 0);
       requestAnimationFrame(animate);
     }
 
@@ -85,6 +83,8 @@
     window.addEventListener("resize", () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
+      imageData = ctx.createImageData(canvas.width, canvas.height);
+      data = imageData.data;
     });
   </script>
 </body>
