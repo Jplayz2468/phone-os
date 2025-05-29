@@ -2,97 +2,118 @@
 <html>
 <head>
   <style>
-    html, body {
+    * {
       margin: 0;
       padding: 0;
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      width: 100%;
+      height: 100%;
       overflow: hidden;
       background: black;
       font-family: sans-serif;
       color: lime;
       cursor: none;
-      width: 100vw;
-      height: 100vh;
     }
+    
+    #container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: black;
+    }
+    
     #fps {
-      position: absolute;
-      top: 0;
-      left: 0;
-      padding: 10px;
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      padding: 5px 10px;
       font-size: 16px;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 10;
+      background: rgba(0, 0, 0, 0.8);
+      border: 1px solid lime;
+      z-index: 100;
     }
-    canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      display: block;
+    
+    #content {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      font-size: 48px;
+      color: lime;
+    }
+    
+    #colorBox {
+      width: 200px;
+      height: 200px;
+      margin: 20px auto;
+      border: 2px solid lime;
+      background: darkgreen;
+      transition: background-color 0.5s ease;
     }
   </style>
 </head>
 <body>
-  <div id="fps">FPS: --</div>
-  <canvas id="canvas"></canvas>
+  <div id="container">
+    <div id="fps">FPS: --</div>
+    <div id="content">
+      <h1>FULLSCREEN TEST</h1>
+      <div id="colorBox"></div>
+      <p>Orange Pi 5 Display</p>
+    </div>
+  </div>
+
   <script>
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-
-    function resizeCanvas() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      imageData = ctx.createImageData(canvas.width, canvas.height);
-      data = imageData.data;
-    }
-
-    resizeCanvas();
-    window.addEventListener("resize", resizeCanvas);
-
-    let imageData = ctx.createImageData(canvas.width, canvas.height);
-    let data = imageData.data;
-
-    let angle = 0;
-    function generateNoiseFrame(time) {
-      const w = canvas.width;
-      const h = canvas.height;
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const i = (y * w + x) * 4;
-          const value =
-            128 + 127 * Math.sin(x * 0.01 + time * 0.002) * Math.cos(y * 0.01 + time * 0.002);
-          data[i] = (value + angle) % 255;
-          data[i + 1] = (value * 0.8) % 255;
-          data[i + 2] = (255 - value) % 255;
-          data[i + 3] = 255;
-        }
-      }
-      angle += 0.5;
-    }
-
+    // Simple FPS counter
     let lastTime = performance.now();
     let frames = 0;
     let fps = 0;
 
-    function animate(now) {
+    function updateFPS() {
       frames++;
+      const now = performance.now();
       if (now - lastTime >= 1000) {
         fps = frames;
         frames = 0;
         lastTime = now;
         document.getElementById("fps").innerText = `FPS: ${fps}`;
       }
-
-      generateNoiseFrame(now);
-      ctx.putImageData(imageData, 0, 0);
-      requestAnimationFrame(animate);
+      requestAnimationFrame(updateFPS);
     }
 
-    animate(performance.now());
+    updateFPS();
 
+    // Force fullscreen on load
+    function forceFullscreen() {
+      document.documentElement.style.width = '100%';
+      document.documentElement.style.height = '100%';
+      document.body.style.width = '100%';
+      document.body.style.height = '100%';
+    }
+
+    window.addEventListener('load', forceFullscreen);
+    window.addEventListener('resize', forceFullscreen);
+
+    // WebSocket connection
     const socket = new WebSocket("ws://localhost:8765");
+    const colorBox = document.getElementById("colorBox");
+    
     socket.onmessage = (msg) => {
       document.body.style.background = msg.data;
+      colorBox.style.background = msg.data === 'black' ? 'darkgreen' : 'black';
+    };
+
+    socket.onerror = (error) => {
+      console.log('WebSocket error:', error);
+    };
+
+    socket.onclose = () => {
+      console.log('WebSocket connection closed');
     };
   </script>
 </body>
