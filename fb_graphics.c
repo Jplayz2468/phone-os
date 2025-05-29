@@ -92,7 +92,7 @@ void init_touch() {
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd >= 0) {
             touch_devs[num_touch++].fd = fd;
-            printf("Monitoring %s (fd=%d)\n", path, fd);
+            printf("✅ Monitoring %s (fd=%d)\n", path, fd);
         }
     }
 }
@@ -122,7 +122,7 @@ void read_touch() {
             }
         }
     }
-    if (touch.just_pressed) printf("Touch at %d,%d\n", touch.x, touch.y);
+    if (touch.just_pressed) printf("👆 Touch at %d,%d\n", touch.x, touch.y);
 }
 
 uint64_t now_ns() {
@@ -156,30 +156,10 @@ int main() {
 
     init_touch();
 
-    uint64_t start = now_ns();
-    float pulse = 0.0f;
-
     while (1) {
         read_touch();
-        if (touch.just_pressed) pulse = 1.0f;
-
-        if (pulse > 0) pulse -= 0.05f;
-
-        float elapsed = (now_ns() - start) / 1e9f;
-        float alpha = fmin(1.0f, elapsed / 0.3f);
-        float scroll_y = elapsed < 0.3f ? (1.0f - alpha) * screen_h : 0.0f;
-        float scale_mod = 1.0f + 0.2f * sinf(pulse * 3.14f);
-
         clear(fbp, COLOR_BG);
-
-        const char *text = "Welcome to Phone OS";
-        float final_scale = scale * scale_mod;
-        int text_w = measure_text_width(&font, text, final_scale);
-        int x = (screen_w - text_w) / 2;
-        int y = screen_h - (screen_h / 6) + (int)scroll_y;
-
-        draw_text(fbp, &font, text, final_scale, x, y, alpha, COLOR_TEXT);
-
+        draw_text(fbp, &font, "Touch the screen!", scale, 50, screen_h / 2, 1.0f, COLOR_TEXT);
         usleep(16000);
     }
 
