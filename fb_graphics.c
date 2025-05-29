@@ -19,6 +19,8 @@
 #define COLOR_BG 0xFF1A1A1A
 #define COLOR_TEXT 0xFFFFFFFF
 #define MAX_TOUCH_DEVICES 8
+#define FONT_HEIGHT 64.0f
+#define LETTER_SPACING 2.0f
 
 uint32_t *fbp = NULL;
 int fb_fd, screen_w, screen_h, stride;
@@ -36,45 +38,45 @@ typedef struct {
 
 TouchState touch = {0};
 
-// ========== Graphics ==========
 void clear(uint32_t *buf, uint32_t color) {
     for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
 }
 
-void draw_bitmap(uint32_t *buf, int x, int y, unsigned char *bitmap, int w, int h, float alpha, uint32_t color) {
-    for (int dy = 0; dy < h; dy++) {
-        for (int dx = 0; dx < w; dx++) {
-            int a = bitmap[dy * w + dx];
-            if (a > 16) {
-                int px = x + dx, py = y + dy;
-                if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
-                    buf[py * screen_w + px] = color;
+void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scale, int x, int y, float alpha, uint32_t color) {
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(font, &ascent, &descent, &lineGap);
+    int baseline = (int)(ascent * scale);
+
+    int px = x;
+    for (const char *p = text; *p; p++) {
+        int ch = *p;
+        int ax;
+        stbtt_GetCodepointHMetrics(font, ch, &ax, NULL);
+        int lsb;
+        stbtt_GetCodepointHMetrics(font, ch, &ax, &lsb);
+        int c_x1, c_y1, c_x2, c_y2;
+        stbtt_GetCodepointBitmapBox(font, ch, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
+        int w = c_x2 - c_x1;
+        int h = c_y2 - c_y1;
+        unsigned char *bitmap = malloc(w * h);
+        stbtt_MakeCodepointBitmap(font, bitmap, w, h, w, scale, scale, ch);
+        for (int row = 0; row < h; row++) {
+            for (int col = 0; col < w; col++) {
+                int a = bitmap[row * w + col];
+                if (a > 0) {
+                    int dx = px + c_x1 + col;
+                    int dy = y + baseline + c_y1 + row;
+                    if (dx >= 0 && dx < screen_w && dy >= 0 && dy < screen_h) {
+                        buf[dy * screen_w + dx] = color;
+                    }
                 }
             }
         }
+        free(bitmap);
+        px += (int)(ax * scale + LETTER_SPACING);
     }
 }
 
-void draw_text_centered(uint32_t *buf, const char *text, stbtt_bakedchar *cdata, float scale, unsigned char *bitmap, int center_x, int center_y, float alpha, uint32_t color) {
-    float x = 0, y = 0;
-    for (const char *t = text; *t; t++) {
-        stbtt_aligned_quad q;
-        stbtt_GetBakedQuad(cdata, 1024, 1024, *t - 32, &x, &y, &q, 1);
-    }
-    float total_width = x;
-    x = center_x - total_width * scale / 2;
-    y = center_y - 32 * scale / 2;
-
-    for (const char *t = text; *t; t++) {
-        stbtt_aligned_quad q;
-        stbtt_GetBakedQuad(cdata, 1024, 1024, *t - 32, &x, &y, &q, 1);
-        int ix = (int)q.x0, iy = (int)q.y0;
-        int w = (int)(q.x1 - q.x0), h = (int)(q.y1 - q.y0);
-        draw_bitmap(buf, ix, iy, bitmap + ((int)q.y0) * 1024 + (int)q.x0, w, h, alpha, color);
-    }
-}
-
-// ========== Touch ==========
 void init_touch() {
     num_touch = 0;
     for (int i = 0; i < 16 && num_touch < MAX_TOUCH_DEVICES; i++) {
@@ -126,21 +128,21 @@ uint64_t now_ns() {
     return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
-// ========== Main ==========
 int main() {
-    // Load font
     FILE *f = fopen(FONT_PATH, "rb");
     if (!f) { perror("Font load failed"); exit(1); }
 
     fseek(f, 0, SEEK_END); int size = ftell(f); rewind(f);
     unsigned char *ttf = malloc(size); fread(ttf, 1, size, f); fclose(f);
 
-    unsigned char *bitmap = calloc(1, 1024 * 1024);
-    stbtt_bakedchar cdata[96];
-    stbtt_BakeFontBitmap(ttf, 0, 64.0, bitmap, 1024, 1024, 32, 96, cdata);
-    free(ttf);
+    stbtt_fontinfo font;
+    if (!stbtt_InitFont(&font, ttf, 0)) {
+        fprintf(stderr, "Failed to initialize font\n");
+        return -1;
+    }
 
-    // Framebuffer
+    float scale = stbtt_ScaleForPixelHeight(&font, FONT_HEIGHT);
+
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
     fb_fd = open("/dev/fb0", O_RDWR);
@@ -160,16 +162,16 @@ int main() {
 
         if (pulse > 0) pulse -= 0.05f;
 
-        float scale = 1.0f + 0.3f * sinf(pulse * 3.14f);
+        float scale_mod = 1.0f + 0.3f * sinf(pulse * 3.14f);
         float alpha = fmin(1.0, (now_ns() - start) / 2e9f);
 
         clear(fbp, COLOR_BG);
-        draw_text_centered(fbp, "Welcome to Phone OS", cdata, scale, bitmap, screen_w / 2, screen_h / 2, alpha, COLOR_TEXT);
+        draw_text(fbp, &font, "Welcome to Phone OS", scale * scale_mod, screen_w / 2 - 200, screen_h / 2, alpha, COLOR_TEXT);
         usleep(16000);
     }
 
     munmap(fbp, stride * screen_h);
     close(fb_fd);
-    free(bitmap);
+    free(ttf);
     return 0;
 }
