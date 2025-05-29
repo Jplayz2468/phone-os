@@ -1,4 +1,5 @@
-// Full C-based minimal phone "OS" with framebuffer UI and confirmed touch support via evdev
+// Minimal phone "OS" - using /dev/input/eventX as touchscreen (treated as mouse clicks)
+// This version treats any BTN_LEFT press as a touch (like a mouse click touchscreen)
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,6 @@
 #include <time.h>
 #include <math.h>
 #include <signal.h>
-#include <termios.h>
 #include <dirent.h>
 
 #define WIDTH 1080
@@ -35,16 +35,12 @@ struct {
     struct fb_fix_screeninfo finfo;
     int input_fd;
     AppMode mode;
-    int abs_x_min, abs_x_max;
-    int abs_y_min, abs_y_max;
-    int x, y, touching;
+    int cursor_x, cursor_y;
 } state;
 
 volatile int running = 1;
 
-void handle_sigint(int sig) {
-    running = 0;
-}
+void handle_sigint(int sig) { running = 0; }
 
 void fill_rect(int x, int y, int w, int h, uint32_t color) {
     for (int j = y; j < y + h; j++) {
@@ -93,10 +89,7 @@ void draw_bounce(uint64_t frame) {
     fill_rect(x, y, 100, 100, COLOR_GREEN);
 }
 
-void check_touch_event() {
-    if (!state.touching) return;
-    int x = (state.x - state.abs_x_min) * WIDTH / (state.abs_x_max - state.abs_x_min);
-    int y = (state.y - state.abs_y_min) * HEIGHT / (state.abs_y_max - state.abs_y_min);
+void handle_touch(int x, int y) {
     if (state.mode == APP_HOME) {
         if (y > 300 && y < 600) {
             if (x > 100 && x < 400) state.mode = APP_CLOCK;
@@ -106,24 +99,24 @@ void check_touch_event() {
     } else {
         state.mode = APP_HOME;
     }
-    state.touching = 0;
 }
 
 void poll_input() {
     struct input_event ev;
     while (read(state.input_fd, &ev, sizeof(ev)) > 0) {
-        if (ev.type == EV_ABS) {
-            if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X) state.x = ev.value;
-            if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y) state.y = ev.value;
-        }
-        if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-            state.touching = ev.value;
-            if (!ev.value) check_touch_event();
+        if (ev.type == EV_REL) {
+            if (ev.code == REL_X) state.cursor_x += ev.value;
+            if (ev.code == REL_Y) state.cursor_y += ev.value;
+        } else if (ev.type == EV_ABS) {
+            if (ev.code == ABS_X) state.cursor_x = ev.value;
+            if (ev.code == ABS_Y) state.cursor_y = ev.value;
+        } else if (ev.type == EV_KEY && ev.code == BTN_LEFT && ev.value == 1) {
+            handle_touch(state.cursor_x, state.cursor_y);
         }
     }
 }
 
-int find_touchscreen() {
+int find_mouse_like_touch() {
     DIR *d = opendir("/dev/input");
     if (!d) return -1;
     struct dirent *ent;
@@ -133,18 +126,9 @@ int find_touchscreen() {
             snprintf(path, sizeof(path), "/dev/input/%s", ent->d_name);
             int fd = open(path, O_RDONLY | O_NONBLOCK);
             if (fd < 0) continue;
-            struct input_absinfo abs;
-            if (ioctl(fd, EVIOCGABS(ABS_X), &abs) == 0) {
-                state.abs_x_min = abs.minimum;
-                state.abs_x_max = abs.maximum;
-            }
-            if (ioctl(fd, EVIOCGABS(ABS_Y), &abs) == 0) {
-                state.abs_y_min = abs.minimum;
-                state.abs_y_max = abs.maximum;
-            }
             char name[256];
             ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-            if (strstr(name, "touch") || strstr(name, "Touch")) {
+            if (strstr(name, "mouse") || strstr(name, "Touch") || strstr(name, "touch")) {
                 closedir(d);
                 return fd;
             }
@@ -170,10 +154,10 @@ int main() {
     state.size = state.finfo.line_length * state.vinfo.yres;
     state.fb = (uint32_t*)mmap(NULL, state.size, PROT_READ | PROT_WRITE, MAP_SHARED, state.fb_fd, 0);
     state.bb = (uint32_t*)calloc(WIDTH * HEIGHT, sizeof(uint32_t));
-    state.input_fd = find_touchscreen();
+    state.input_fd = find_mouse_like_touch();
     state.mode = APP_HOME;
-    state.x = state.y = 0;
-    state.touching = 0;
+    state.cursor_x = WIDTH / 2;
+    state.cursor_y = HEIGHT / 2;
 
     uint64_t frame = 0;
     while (running) {
