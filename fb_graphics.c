@@ -20,15 +20,17 @@
 #define COLOR_BG 0xFF1A1A1A
 #define COLOR_TEXT 0xFFFFFFFF
 #define COLOR_INFO 0xFFAAAAAA
-#define MAX_TOUCH_DEVICES 32
 #define FONT_HEIGHT 64.0f
 #define LETTER_SPACING 2.0f
+#define MAX_TOUCH_DEVICES 32
 
 uint32_t *fbp = NULL;
+uint32_t *backbuffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
 
 typedef struct {
-    int fd, min_x, max_x, min_y, max_y;
+    int fd;
+    int min_x, max_x, min_y, max_y;
 } TouchDev;
 
 TouchDev touch_devs[MAX_TOUCH_DEVICES];
@@ -99,6 +101,7 @@ void init_touch() {
         if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) {
             close(fd); continue;
         }
+
         touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
         printf("Added touch device %s (fd=%d)\n", path, fd);
     }
@@ -166,6 +169,7 @@ float get_cpu_usage_percent() {
 
 void cleanup(int sig) {
     if (fbp) clear(fbp, 0x00000000);
+    if (backbuffer) free(backbuffer);
     if (fbp) munmap(fbp, stride * screen_h);
     if (fb_fd > 0) close(fb_fd);
     printf("\nCleaned up framebuffer\n");
@@ -196,44 +200,50 @@ int main() {
     ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
     screen_w = vinfo.xres; screen_h = vinfo.yres; stride = finfo.line_length;
     fbp = mmap(0, stride * screen_h, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+    backbuffer = malloc(screen_w * screen_h * 4);
 
     init_touch();
 
-    uint64_t last_fps_time = now_ns(), last_time = last_fps_time;
+    uint64_t last_time = now_ns(), last_fps_time = last_time;
     int frame_count = 0, fps = 0;
-    float cpu_usage = 0;
+    float cpu = 0;
 
     while (1) {
         uint64_t frame_start = now_ns();
         read_touch();
-        clear(fbp, COLOR_BG);
 
-        frame_count++;
+        clear(backbuffer, COLOR_BG);
+
         uint64_t now = now_ns();
-        if (now - last_fps_time > 1000000000ULL) {
+        float t = (now - last_time) / 1e9f;
+        frame_count++;
+
+        if ((now - last_fps_time) > 1e9f) {
             fps = frame_count;
+            cpu = get_cpu_usage_percent();
             frame_count = 0;
-            cpu_usage = get_cpu_usage_percent();
             last_fps_time = now;
         }
 
         char info[128];
-        snprintf(info, sizeof(info), "CPU: %.1f%%  FPS: %d", cpu_usage, fps);
-        draw_text(fbp, &font, info, scale * 0.3f, 20, 20, 1.0f, COLOR_INFO);
+        snprintf(info, sizeof(info), "CPU: %.1f%%  FPS: %d", cpu, fps);
+        draw_text(backbuffer, &font, info, scale * 0.3f, 20, 20, 1.0f, COLOR_INFO);
 
-        float t = (now - last_time) / 1e9f;
-        float anim_scale = 1.0f + 0.2f * sinf(t * 2.0f);
-        int y_offset = (int)(20 * sinf(t * 1.5f));
-        int x_offset = (int)(20 * cosf(t * 1.2f));
-
-        const char *msg = "Welcome to Phone OS";
+        float anim_scale = 1.0f + 0.3f * sinf(t * 2);
+        int y_offset = (int)(60 * sinf(t * 1.5f));
+        int x_offset = (int)(60 * cosf(t * 1.1f));
         float final_scale = scale * anim_scale;
+        const char *msg = "Welcome to Phone OS";
         int text_w = measure_text_width(&font, msg, final_scale);
         int x = (screen_w - text_w) / 2 + x_offset;
         int y = screen_h / 2 + y_offset;
-        draw_text(fbp, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
+        draw_text(backbuffer, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
 
-        usleep(16666); // ~60 FPS
+        memcpy(fbp, backbuffer, screen_w * screen_h * 4);
+
+        uint64_t frame_end = now_ns();
+        int sleep_us = 16666 - (int)((frame_end - frame_start) / 1000);
+        if (sleep_us > 0) usleep(sleep_us);
     }
 
     return 0;
