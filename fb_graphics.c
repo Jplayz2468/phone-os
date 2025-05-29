@@ -39,7 +39,7 @@ typedef struct {
 TouchState touch = {0};
 
 void clear(uint32_t *buf, uint32_t color) {
-    for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
+    memset(buf, color, screen_w * screen_h * sizeof(uint32_t));
 }
 
 int measure_text_width(stbtt_fontinfo *font, const char *text, float scale) {
@@ -87,7 +87,7 @@ void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scal
 
 void init_touch() {
     num_touch = 0;
-    for (int i = 0; i < 16 && num_touch < MAX_TOUCH_DEVICES; i++) {
+    for (int i = 0; i < 32 && num_touch < MAX_TOUCH_DEVICES; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
@@ -98,6 +98,7 @@ void init_touch() {
             close(fd); continue;
         }
         touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
+        printf("Added touch device %s (fd=%d)\n", path, fd);
     }
 }
 
@@ -128,6 +129,7 @@ void read_touch() {
             }
         }
     }
+    if (touch.just_pressed) printf("Touch at %d,%d\n", touch.x, touch.y);
 }
 
 uint64_t now_ns() {
@@ -171,8 +173,8 @@ int main() {
         if (pulse > 0) pulse -= 0.05f;
 
         float elapsed = (now_ns() - start) / 1e9f;
-        float alpha = fmin(1.0f, elapsed / 2.0f);
-        float scroll_y = elapsed < 2.0f ? (1.0f - alpha) * 100.0f : 0.0f;
+        float alpha = fmin(1.0f, elapsed / 0.5f);
+        float scroll_y = elapsed < 0.5f ? (1.0f - alpha) * screen_h : 0.0f;
         float scale_mod = 1.0f + 0.2f * sinf(pulse * 3.14f);
 
         clear(fbp, COLOR_BG);
@@ -181,7 +183,7 @@ int main() {
         float final_scale = scale * scale_mod;
         int text_w = measure_text_width(&font, text, final_scale);
         int x = (screen_w - text_w) / 2;
-        int y = screen_h / 2 + (int)scroll_y;
+        int y = screen_h - (screen_h / 6) + (int)scroll_y;
 
         draw_text(fbp, &font, text, final_scale, x, y, alpha, COLOR_TEXT);
 
