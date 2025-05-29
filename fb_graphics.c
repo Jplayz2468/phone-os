@@ -28,8 +28,18 @@ uint32_t *fbp = NULL;
 uint32_t *backbuffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
 
-int touch_fds[MAX_TOUCH_DEVICES];
-int touch_x = 0, touch_y = 0, touch_down = 0, touch_just_pressed = 0;
+typedef struct {
+    int fd, min_x, max_x, min_y, max_y;
+} TouchDev;
+
+TouchDev touch_devs[MAX_TOUCH_DEVICES];
+int num_touch = 0;
+
+typedef struct {
+    int x, y, pressed, just_pressed;
+} TouchState;
+
+TouchState touch = {0};
 
 void clear(uint32_t *buf, uint32_t color) {
     for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
@@ -79,37 +89,46 @@ void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scal
 }
 
 void init_touch() {
+    num_touch = 0;
     for (int i = 0; i < MAX_TOUCH_DEVICES; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
-        if (fd >= 0) {
-            printf("✅ Touch input: %s (fd=%d)\n", path, fd);
-            touch_fds[i] = fd;
-        } else {
-            touch_fds[i] = -1;
+        if (fd < 0) continue;
+
+        struct input_absinfo ax, ay;
+        if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) {
+            close(fd); continue;
         }
+        touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
+        printf("Added touch device %s (fd=%d)\n", path, fd);
     }
 }
 
 void read_touch() {
-    touch_just_pressed = 0;
-    struct input_event ev;
-    for (int i = 0; i < MAX_TOUCH_DEVICES; i++) {
-        if (touch_fds[i] < 0) continue;
-        while (read(touch_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
+    touch.just_pressed = 0;
+    struct pollfd fds[MAX_TOUCH_DEVICES];
+    for (int i = 0; i < num_touch; i++) {
+        fds[i] = (struct pollfd){touch_devs[i].fd, POLLIN, 0};
+    }
+    if (poll(fds, num_touch, 0) <= 0) return;
+
+    for (int i = 0; i < num_touch; i++) {
+        if (!(fds[i].revents & POLLIN)) continue;
+        struct input_event ev;
+        while (read(touch_devs[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
             if (ev.type == EV_ABS) {
-                if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X) {
-                    touch_x = ev.value;
-                } else if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y) {
-                    touch_y = ev.value;
-                } else if (ev.code == ABS_MT_TRACKING_ID) {
-                    if (ev.value == -1) touch_down = 0;
-                    else { touch_down = 1; touch_just_pressed = 1; }
+                if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X)
+                    touch.x = (ev.value - touch_devs[i].min_x) * screen_w / (touch_devs[i].max_x - touch_devs[i].min_x + 1);
+                if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y)
+                    touch.y = (ev.value - touch_devs[i].min_y) * screen_h / (touch_devs[i].max_y - touch_devs[i].min_y + 1);
+                if (ev.code == ABS_MT_TRACKING_ID) {
+                    if (ev.value == -1) touch.pressed = 0;
+                    else { touch.pressed = 1; touch.just_pressed = 1; }
                 }
             } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-                if (!touch_down && ev.value) touch_just_pressed = 1;
-                touch_down = ev.value;
+                if (!touch.pressed && ev.value) touch.just_pressed = 1;
+                touch.pressed = ev.value;
             }
         }
     }
@@ -125,11 +144,7 @@ float get_cpu_usage_percent() {
     static unsigned long long last_total = 0, last_idle = 0;
     FILE *f = fopen("/proc/stat", "r");
     if (!f) return 0;
-
-    char line[256];
-    fgets(line, sizeof(line), f);
-    fclose(f);
-
+    char line[256]; fgets(line, sizeof(line), f); fclose(f);
     unsigned long long user, nice, system, idle, iowait, irq, softirq;
     sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &system, &idle, &iowait, &irq, &softirq);
     unsigned long long total = user + nice + system + idle + iowait + irq + softirq;
@@ -140,9 +155,7 @@ float get_cpu_usage_percent() {
         unsigned long long delta_idle = idle - last_idle;
         usage = 100.0f * (delta_total - delta_idle) / delta_total;
     }
-
-    last_total = total;
-    last_idle = idle;
+    last_total = total; last_idle = idle;
     return usage;
 }
 
@@ -165,8 +178,7 @@ int main() {
 
     stbtt_fontinfo font;
     if (!stbtt_InitFont(&font, ttf, 0)) {
-        fprintf(stderr, "Failed to initialize font\n");
-        return -1;
+        fprintf(stderr, "Failed to initialize font\n"); return -1;
     }
 
     float scale = stbtt_ScaleForPixelHeight(&font, FONT_HEIGHT);
