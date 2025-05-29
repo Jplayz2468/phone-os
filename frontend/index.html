@@ -678,7 +678,6 @@
       // Close any currently open app first
       document.querySelectorAll('.app-screen').forEach(screen => {
         screen.classList.remove('active');
-        screen.style.transform = 'translate3d(1080px, 0, 0)';
       });
       
       currentApp = appId;
@@ -699,7 +698,8 @@
           document.getElementById('genericAppTitle').textContent = apps[appId]?.name || 'App';
         }
         
-        // Trigger CSS transition for app screen
+        // Clear any inline styles and trigger CSS transition
+        appScreen.style.transform = '';
         appScreen.classList.add('active');
       }, 100);
       
