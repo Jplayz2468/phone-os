@@ -1,5 +1,8 @@
 const { app, BrowserWindow } = require('electron');
 
+// CRITICAL: Force device scale factor to prevent scaling issues
+app.commandLine.appendSwitch('--force-device-scale-factor', '1');
+app.commandLine.appendSwitch('--high-dpi-support', '1');
 app.commandLine.appendSwitch('--no-sandbox');
 app.commandLine.appendSwitch('--disable-gpu');
 app.commandLine.appendSwitch('--disable-gpu-sandbox');
@@ -14,8 +17,8 @@ app.commandLine.appendSwitch('--disable-extensions');
 
 app.whenReady().then(() => {
   const win = new BrowserWindow({
-    width: 1080,              // Portrait: width is smaller
-    height: 1920,             // Portrait: height is larger  
+    width: 1080,
+    height: 1920,
     x: 0,
     y: 0,
     fullscreen: true,
@@ -23,15 +26,16 @@ app.whenReady().then(() => {
     transparent: false,
     resizable: false,
     alwaysOnTop: true,
-    kiosk: true,              // Kiosk mode for embedded systems
+    kiosk: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
       webSecurity: false,
       backgroundThrottling: false,
       offscreen: false,
-      hardwareAcceleration: false,  // Disable hardware acceleration
-      enableRemoteModule: true
+      hardwareAcceleration: false,
+      enableRemoteModule: true,
+      zoomFactor: 1.0  // Force zoom factor to 1.0
     },
     show: false
   });
@@ -46,7 +50,10 @@ app.whenReady().then(() => {
     win.setFullScreen(true);
     win.setKiosk(true);
     
-    // Additional fullscreen enforcement
+    // Set zoom level to 0 (which means 100% zoom)
+    win.webContents.setZoomLevel(0);
+    win.webContents.setZoomFactor(1.0);
+    
     setTimeout(() => {
       win.setSize(1080, 1920);
       win.setPosition(0, 0);
@@ -61,6 +68,7 @@ app.whenReady().then(() => {
     win.webContents.executeJavaScript(`
       console.log('Window size:', window.innerWidth, 'x', window.innerHeight);
       console.log('Screen size:', screen.width, 'x', screen.height);
+      console.log('Device pixel ratio:', window.devicePixelRatio);
     `);
   });
 

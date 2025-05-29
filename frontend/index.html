@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=1080, height=1920, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
   <style>
     * {
       margin: 0;
@@ -13,10 +13,6 @@
     html, body {
       width: 1080px !important;
       height: 1920px !important;
-      max-width: 1080px !important;
-      max-height: 1920px !important;
-      min-width: 1080px !important;
-      min-height: 1920px !important;
       overflow: hidden;
       background: black;
       font-family: sans-serif;
@@ -25,6 +21,8 @@
       position: fixed;
       top: 0;
       left: 0;
+      zoom: 1.0 !important;
+      transform: scale(1.0) !important;
     }
     
     #container {
@@ -34,7 +32,7 @@
       width: 1080px;
       height: 1920px;
       background: black;
-      border: 2px solid red; /* Debug border */
+      border: 2px solid red; /* Debug border - remove once working */
     }
     
     #fps {
@@ -93,20 +91,29 @@
   <div id="container">
     <div id="fps">FPS: --</div>
     <div id="content">
-      <h1>PORTRAIT MODE</h1>
+      <h1>FULLSCREEN FIXED</h1>
       <div id="colorBox"></div>
       <p>Orange Pi 5 - 1080x1920</p>
     </div>
     <div id="debug">
-      Size: <span id="sizeInfo">--</span>
+      Size: <span id="sizeInfo">--</span><br>
+      DPR: <span id="dprInfo">--</span>
     </div>
   </div>
 
   <script>
+    // Force device pixel ratio to 1 if it's not
+    if (window.devicePixelRatio !== 1) {
+      console.warn('Device pixel ratio is:', window.devicePixelRatio);
+      // Try to force it by applying CSS zoom
+      document.documentElement.style.zoom = (1 / window.devicePixelRatio);
+    }
+
     // Debug info
     function updateDebugInfo() {
       document.getElementById('sizeInfo').textContent = 
         `${window.innerWidth}x${window.innerHeight} | Screen: ${screen.width}x${screen.height}`;
+      document.getElementById('dprInfo').textContent = window.devicePixelRatio;
     }
     
     updateDebugInfo();
@@ -142,9 +149,6 @@
     
     window.addEventListener('load', enforceSize);
     window.addEventListener('resize', enforceSize);
-    
-    // Enforce size every second as backup
-    setInterval(enforceSize, 1000);
 
     // WebSocket connection
     const socket = new WebSocket("ws://localhost:8765");
