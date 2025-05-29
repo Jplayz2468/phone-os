@@ -10,6 +10,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <signal.h>
+#include <termios.h>
 
 // Define _GNU_SOURCE for aligned_alloc if not already defined
 #ifndef _GNU_SOURCE
@@ -50,9 +51,41 @@ typedef struct {
 
 static volatile int running = 1;
 static FrameBuffer fb;
+static struct termios orig_termios;
 
 void signal_handler(int sig) {
     running = 0;
+}
+
+// Hide terminal cursor and disable echo
+void setup_terminal() {
+    // Get current terminal attributes
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    
+    // Hide cursor
+    printf("\033[?25l");
+    
+    // Set terminal to raw mode (no echo, no buffering)
+    struct termios raw = orig_termios;
+    raw.c_lflag &= ~(ECHO | ICANON);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    
+    // Clear screen
+    printf("\033[2J\033[H");
+    fflush(stdout);
+}
+
+// Restore terminal settings
+void restore_terminal() {
+    // Show cursor
+    printf("\033[?25h");
+    
+    // Restore original terminal attributes
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+    
+    // Clear screen and reset
+    printf("\033[2J\033[H");
+    fflush(stdout);
 }
 
 // Fast rectangle fill using 64-bit writes where possible
@@ -203,6 +236,8 @@ int init_framebuffer() {
 }
 
 void cleanup_framebuffer() {
+    restore_terminal();
+    
     if (fb.framebuffer != MAP_FAILED) {
         munmap(fb.framebuffer, fb.screensize);
     }
@@ -278,29 +313,23 @@ void render_frame(MovingRect *rects, int num_rects, uint64_t frame_count) {
         uint32_t colors[] = {COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_CYAN, COLOR_MAGENTA};
         fast_fill_circle(fb.backbuffer, cx, cy, radius, colors[i], screen_width, screen_height);
     }
-    
-    // Draw frame counter
-    char fps_text[32];
-    snprintf(fps_text, sizeof(fps_text), "Frame: %lu", frame_count);
-    
-    // Simple text as rectangles (just for demo)
-    int text_x = 10;
-    int text_y = 10;
-    for (int i = 0; fps_text[i] && i < 20; i++) {
-        fast_fill_rect(fb.backbuffer, text_x + i * 12, text_y, 8, 16, COLOR_WHITE, screen_width, screen_height);
-    }
 }
 
 int main() {
     printf("Orange Pi 5 High-Performance Framebuffer Demo\n");
-    printf("Target: 1920x1080 portrait @ 60fps\n");
+    printf("Target: High-performance graphics @ 60fps\n");
+    printf("Press Ctrl+C to exit\n");
     
     // Set up signal handler for clean exit
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
+    // Set up terminal (hide cursor, disable echo)
+    setup_terminal();
+    
     // Initialize framebuffer
     if (init_framebuffer() < 0) {
+        restore_terminal();
         return 1;
     }
     
@@ -326,7 +355,7 @@ int main() {
     uint64_t fps_counter = 0;
     uint64_t fps_time = last_time;
     
-    printf("Starting render loop...\n");
+    printf("Starting render loop... (Ctrl+C to exit)\n");
     
     while (running) {
         uint64_t frame_start = get_time_ns();
@@ -340,9 +369,10 @@ int main() {
         frame_count++;
         fps_counter++;
         
-        // Print FPS every second
-        if (frame_start - fps_time >= 1000000000) {
-            printf("FPS: %lu, Frame: %lu\n", fps_counter, frame_count);
+        // Print FPS every 5 seconds to be less intrusive
+        if (frame_start - fps_time >= 5000000000) {
+            printf("\rFPS: %lu, Frame: %lu", fps_counter / 5, frame_count);
+            fflush(stdout);
             fps_counter = 0;
             fps_time = frame_start;
         }
@@ -363,7 +393,7 @@ int main() {
         last_time = frame_start;
     }
     
-    printf("\nCleaning up...\n");
+    printf("\nExiting gracefully...\n");
     cleanup_framebuffer();
     return 0;
 }
