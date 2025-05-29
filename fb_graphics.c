@@ -1,4 +1,3 @@
-// Compile with: gcc -O2 -o mini_ui mini_ui.c -lm
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -12,13 +11,13 @@
 #include <poll.h>
 #include <signal.h>
 #include <math.h>
+#include <sys/mman.h>
 
 #define COLOR_BG 0xFF1A1A1A
-#define COLOR_TEXT 0xFFFFFFFF
 #define COLOR_TOUCH 0xFF0078D4
 #define MAX_TOUCH 8
-int running = 1;
 
+int running = 1;
 struct fb_var_screeninfo vinfo;
 struct fb_fix_screeninfo finfo;
 uint32_t *fbp = NULL, *back = NULL;
@@ -28,26 +27,25 @@ struct TouchDev { int fd, minx, maxx, miny, maxy; } tdev[MAX_TOUCH];
 int num_touch = 0;
 struct { int x, y, pressed; } touch = {0}, last = {0};
 
-// Draw
+void handle_sig(int sig) { running = 0; }
+
 void draw_pixel(uint32_t *buf, int x, int y, uint32_t c) {
     if (x >= 0 && x < w && y >= 0 && y < h) buf[y * w + x] = c;
 }
 void draw_circle(uint32_t *buf, int cx, int cy, int r, uint32_t c) {
-    for (int y = -r; y <= r; y++) for (int x = -r; x <= r; x++)
-        if (x*x + y*y <= r*r) draw_pixel(buf, cx + x, cy + y, c);
+    for (int y = -r; y <= r; y++) {
+        for (int x = -r; x <= r; x++) {
+            if (x*x + y*y <= r*r) draw_pixel(buf, cx + x, cy + y, c);
+        }
+    }
 }
 void clear(uint32_t *buf, uint32_t c) {
     for (int i = 0; i < w * h; i++) buf[i] = c;
-}
-void draw_text(uint32_t *buf, int x, int y, const char *t, uint32_t c) {
-    while (*t) { for (int dy = 0; dy < 10; dy++) for (int dx = 0; dx < 6; dx++)
-        draw_pixel(buf, x+dx, y+dy, c); x += 8; t++; }
 }
 void swap() {
     for (int y = 0; y < h; y++) memcpy((char*)fbp + y*line_len, &back[y*w], w*4);
 }
 
-// Touch
 int init_touch() {
     for (int i = 0; i < 16 && num_touch < MAX_TOUCH; i++) {
         char path[64]; snprintf(path, 64, "/dev/input/event%d", i);
@@ -60,7 +58,11 @@ int init_touch() {
 }
 void read_touch() {
     struct pollfd pf[MAX_TOUCH];
-    for (int i = 0; i < num_touch; i++) pf[i] = (struct pollfd){tdev[i].fd, POLLIN};
+    for (int i = 0; i < num_touch; i++) {
+        pf[i].fd = tdev[i].fd;
+        pf[i].events = POLLIN;
+        pf[i].revents = 0;
+    }
     if (poll(pf, num_touch, 0) <= 0) return;
     for (int i = 0; i < num_touch; i++) if (pf[i].revents & POLLIN) {
         struct input_event e;
@@ -77,8 +79,6 @@ void read_touch() {
         }
     }
 }
-
-// Fallback
 void read_keys() {
     int ch = getchar();
     if (ch == 'q') running = 0;
@@ -89,28 +89,19 @@ void read_keys() {
     if (ch == ' ') touch.pressed = 1;
 }
 
-// Main loop
 void loop() {
-    char timebuf[32];
     while (running) {
         last = touch;
         if (num_touch) read_touch(); else read_keys();
         clear(back, COLOR_BG);
-
-        time_t now = time(NULL);
-        strftime(timebuf, 31, "%H:%M:%S", localtime(&now));
-        draw_text(back, 30, 30, "Hello Mini UI", COLOR_TEXT);
-        draw_text(back, 30, 60, timebuf, COLOR_TEXT);
-
         if (touch.pressed) draw_circle(back, touch.x, touch.y, 30, COLOR_TOUCH);
         swap();
         usleep(16000);
     }
 }
 
-// Init
 int main() {
-    signal(SIGINT, [](int s){ running = 0; });
+    signal(SIGINT, handle_sig);
     fb_fd = open("/dev/fb0", O_RDWR);
     ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
     ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo);
