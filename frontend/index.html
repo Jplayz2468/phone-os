@@ -2,7 +2,6 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=1080, height=1920, user-scalable=no, initial-scale=1.0">
   <style>
     * {
       margin: 0;
@@ -11,25 +10,21 @@
     }
     
     html, body {
-      width: 1080px !important;
-      height: 1920px !important;
+      width: 100%;
+      height: 100%;
       overflow: hidden;
       background: black;
       font-family: Arial, sans-serif;
       color: white;
       cursor: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      zoom: 1.0 !important;
     }
     
     #main {
       position: absolute;
       top: 0;
       left: 0;
-      width: 1080px;
-      height: 1920px;
+      width: 100%;
+      height: 100%;
       background: darkgreen;
       display: flex;
       flex-direction: column;
@@ -39,22 +34,22 @@
     }
     
     h1 {
-      font-size: 120px;
-      margin-bottom: 60px;
+      font-size: 200px;
+      margin-bottom: 50px;
       color: white;
     }
     
     p {
-      font-size: 60px;
+      font-size: 100px;
       color: white;
     }
     
     #box {
-      width: 300px;
-      height: 300px;
+      width: 400px;
+      height: 400px;
       background: red;
-      margin: 60px 0;
-      border: 5px solid white;
+      margin: 50px 0;
+      border: 10px solid white;
     }
   </style>
 </head>
@@ -66,17 +61,29 @@
   </div>
 
   <script>
-    // Force device pixel ratio fix
-    if (window.devicePixelRatio !== 1) {
-      document.documentElement.style.zoom = (1 / window.devicePixelRatio);
+    // Aggressively force full screen
+    function stretch() {
+      const html = document.documentElement;
+      const body = document.body;
+      const main = document.getElementById('main');
+      
+      // Remove all constraints
+      html.style.cssText = 'width:100%!important;height:100%!important;margin:0!important;padding:0!important;overflow:hidden!important;';
+      body.style.cssText = 'width:100%!important;height:100%!important;margin:0!important;padding:0!important;overflow:hidden!important;background:black!important;';
+      main.style.cssText = 'position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;background:darkgreen!important;display:flex!important;flex-direction:column!important;justify-content:center!important;align-items:center!important;text-align:center!important;';
     }
 
-    // WebSocket connection for color changes
+    stretch();
+    window.addEventListener('load', stretch);
+    setInterval(stretch, 500);
+
+    // WebSocket connection
     const socket = new WebSocket("ws://localhost:8765");
-    const main = document.getElementById("main");
-    const box = document.getElementById("box");
     
     socket.onmessage = (msg) => {
+      const main = document.getElementById("main");
+      const box = document.getElementById("box");
+      
       if (msg.data === 'black') {
         main.style.background = 'black';
         box.style.background = 'lime';
@@ -84,10 +91,6 @@
         main.style.background = 'darkgreen';
         box.style.background = 'red';
       }
-    };
-
-    socket.onerror = (error) => {
-      console.log('WebSocket error:', error);
     };
   </script>
 </body>
