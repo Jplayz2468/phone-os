@@ -146,6 +146,7 @@ static FILE *orig_stdout = NULL;
 static FILE *orig_stderr = NULL;
 
 void signal_handler(int sig) {
+    (void)sig; // Suppress unused parameter warning
     running = 0;
     touch.running = 0;
 }
@@ -365,13 +366,15 @@ void draw_text(uint32_t *buffer, int x, int y, const char *text, uint32_t color,
 
 // Touch input handling
 void* touch_thread(void* arg) {
+    (void)arg; // Suppress unused parameter warning
+    
     struct input_event ev;
     int current_x = 0, current_y = 0;
     int touch_active = 0;
     
     while (touch.running) {
         ssize_t bytes = read(touch.fd, &ev, sizeof(ev));
-        if (bytes < sizeof(ev)) continue;
+        if (bytes < (ssize_t)sizeof(ev)) continue;
         
         switch (ev.type) {
             case EV_ABS:
@@ -680,8 +683,12 @@ void draw_clock_screen() {
         int x2 = center_x + (radius - 10) * cos(angle);
         int y2 = center_y + (radius - 10) * sin(angle);
         
-        // Draw hour mark as small rectangle
-        draw_rect(fb.backbuffer, x1, y1, 3, 3, COLOR_TEXT, screen_width, screen_height);
+        // Draw hour mark as line from inner to outer circle
+        for (int j = 0; j < 10; j++) {
+            int x = x1 + (x2 - x1) * j / 10;
+            int y = y1 + (y2 - y1) * j / 10;
+            draw_pixel(fb.backbuffer, x, y, COLOR_TEXT, screen_width, screen_height);
+        }
     }
     
     // Clock hands
@@ -689,10 +696,35 @@ void draw_clock_screen() {
     float min_angle = (tm_info->tm_min * 6 - 90) * M_PI / 180;
     float sec_angle = (tm_info->tm_sec * 6 - 90) * M_PI / 180;
     
-    // Hour hand
-    int hour_x = center_x + 50 * cos(hour_angle);
-    int hour_y = center_y + 50 * sin(hour_angle);
-    draw_rect(fb.backbuffer, center_x - 2, center_y - 2, 4, 4, COLOR_TEXT, screen_width, screen_height);
+    // Center dot
+    draw_circle(fb.backbuffer, center_x, center_y, 5, COLOR_TEXT, screen_width, screen_height);
+    
+    // Hour hand (short, thick)
+    int hour_x = center_x + 40 * cos(hour_angle);
+    int hour_y = center_y + 40 * sin(hour_angle);
+    for (int i = 0; i < 40; i++) {
+        int x = center_x + i * cos(hour_angle);
+        int y = center_y + i * sin(hour_angle);
+        draw_circle(fb.backbuffer, x, y, 2, COLOR_TEXT, screen_width, screen_height);
+    }
+    
+    // Minute hand (longer, thinner)
+    int min_x = center_x + 60 * cos(min_angle);
+    int min_y = center_y + 60 * sin(min_angle);
+    for (int i = 0; i < 60; i++) {
+        int x = center_x + i * cos(min_angle);
+        int y = center_y + i * sin(min_angle);
+        draw_pixel(fb.backbuffer, x, y, COLOR_TEXT, screen_width, screen_height);
+    }
+    
+    // Second hand (longest, thin, red)
+    int sec_x = center_x + 70 * cos(sec_angle);
+    int sec_y = center_y + 70 * sin(sec_angle);
+    for (int i = 0; i < 70; i++) {
+        int x = center_x + i * cos(sec_angle);
+        int y = center_y + i * sin(sec_angle);
+        draw_pixel(fb.backbuffer, x, y, COLOR_ERROR, screen_width, screen_height);
+    }
     
     // Back button
     draw_rounded_rect(fb.backbuffer, 40, 40, 100, 50, 10, COLOR_PRIMARY, screen_width, screen_height);
