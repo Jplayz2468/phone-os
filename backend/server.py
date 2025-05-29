@@ -14,18 +14,18 @@ class PhoneOS:
         self.brightness = 80
         self.volume = 60
         self.apps = {
-            "home": {"name": "Home", "icon": "🏠"},
-            "phone": {"name": "Phone", "icon": "📞"},
-            "messages": {"name": "Messages", "icon": "💬"},
-            "camera": {"name": "Camera", "icon": "📷"},
-            "photos": {"name": "Photos", "icon": "🖼️"},
-            "settings": {"name": "Settings", "icon": "⚙️"},
-            "calculator": {"name": "Calculator", "icon": "🔢"},
-            "clock": {"name": "Clock", "icon": "⏰"},
-            "weather": {"name": "Weather", "icon": "🌤️"},
-            "music": {"name": "Music", "icon": "🎵"},
-            "maps": {"name": "Maps", "icon": "🗺️"},
-            "browser": {"name": "Browser", "icon": "🌐"}
+            "home": {"name": "Home", "icon": "H"},
+            "phone": {"name": "Phone", "icon": "P"},
+            "messages": {"name": "Messages", "icon": "M"},
+            "camera": {"name": "Camera", "icon": "C"},
+            "photos": {"name": "Photos", "icon": "I"},
+            "settings": {"name": "Settings", "icon": "S"},
+            "calculator": {"name": "Calculator", "icon": "#"},
+            "clock": {"name": "Clock", "icon": "T"},
+            "weather": {"name": "Weather", "icon": "W"},
+            "music": {"name": "Music", "icon": "♪"},
+            "maps": {"name": "Maps", "icon": "MAP"},
+            "browser": {"name": "Browser", "icon": "B"}
         }
         
     def get_status(self):
@@ -63,7 +63,7 @@ class PhoneOS:
             return {"display": "0", "operation": None}
         elif app_id == "weather":
             return {
-                "temperature": "22°C",
+                "temperature": "22C",
                 "condition": "Sunny",
                 "humidity": "65%",
                 "wind": "5 km/h"
@@ -75,56 +75,24 @@ class PhoneOS:
                 "wifi": self.wifi_strength > 0
             }
         return {}
-    
-    def add_notification(self, title, message):
-        self.notifications.append({
-            "id": len(self.notifications),
-            "title": title,
-            "message": message,
-            "time": datetime.now().strftime("%H:%M")
-        })
 
 phone_os = PhoneOS()
 
 async def handler(websocket):
     print("Client connected")
     
-    # Send initial status
     await websocket.send(json.dumps(phone_os.get_status()))
     await websocket.send(json.dumps(phone_os.get_apps()))
     
-    # Background tasks
     async def status_updater():
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
             try:
                 await websocket.send(json.dumps(phone_os.get_status()))
             except:
                 break
     
-    async def random_notifications():
-        messages = [
-            {"title": "New Message", "message": "Hey, how are you?"},
-            {"title": "Weather Alert", "message": "Sunny day ahead!"},
-            {"title": "App Update", "message": "Calculator updated"},
-            {"title": "Battery", "message": "Battery at 20%"}
-        ]
-        while True:
-            await asyncio.sleep(random.randint(30, 120))
-            try:
-                msg = random.choice(messages)
-                phone_os.add_notification(msg["title"], msg["message"])
-                await websocket.send(json.dumps({
-                    "type": "notification",
-                    "title": msg["title"],
-                    "message": msg["message"]
-                }))
-            except:
-                break
-    
-    # Start background tasks
     asyncio.create_task(status_updater())
-    asyncio.create_task(random_notifications())
     
     try:
         async for message in websocket:
@@ -139,9 +107,6 @@ async def handler(websocket):
                     response = {"type": "app_closed"}
                 elif data["type"] == "get_apps":
                     response = phone_os.get_apps()
-                elif data["type"] == "calculator":
-                    # Handle calculator operations
-                    response = {"type": "calculator_result", "result": eval(data.get("expression", "0"))}
                 elif data["type"] == "settings_change":
                     if "brightness" in data:
                         phone_os.brightness = data["brightness"]
