@@ -42,9 +42,19 @@ void clear(uint32_t *buf, uint32_t color) {
     for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
 }
 
+int measure_text_width(stbtt_fontinfo *font, const char *text, float scale) {
+    int width = 0;
+    for (const char *p = text; *p; p++) {
+        int ax;
+        stbtt_GetCodepointHMetrics(font, *p, &ax, NULL);
+        width += (int)(ax * scale + LETTER_SPACING);
+    }
+    return width;
+}
+
 void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scale, int x, int y, float alpha, uint32_t color) {
-    int ascent, descent, lineGap;
-    stbtt_GetFontVMetrics(font, &ascent, &descent, &lineGap);
+    int ascent;
+    stbtt_GetFontVMetrics(font, &ascent, NULL, NULL);
     int baseline = (int)(ascent * scale);
 
     int px = x;
@@ -52,8 +62,6 @@ void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scal
         int ch = *p;
         int ax;
         stbtt_GetCodepointHMetrics(font, ch, &ax, NULL);
-        int lsb;
-        stbtt_GetCodepointHMetrics(font, ch, &ax, &lsb);
         int c_x1, c_y1, c_x2, c_y2;
         stbtt_GetCodepointBitmapBox(font, ch, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
         int w = c_x2 - c_x1;
@@ -162,11 +170,21 @@ int main() {
 
         if (pulse > 0) pulse -= 0.05f;
 
-        float scale_mod = 1.0f + 0.3f * sinf(pulse * 3.14f);
-        float alpha = fmin(1.0, (now_ns() - start) / 2e9f);
+        float elapsed = (now_ns() - start) / 1e9f;
+        float alpha = fmin(1.0f, elapsed / 2.0f);
+        float scroll_y = elapsed < 2.0f ? (1.0f - alpha) * 100.0f : 0.0f;
+        float scale_mod = 1.0f + 0.2f * sinf(pulse * 3.14f);
 
         clear(fbp, COLOR_BG);
-        draw_text(fbp, &font, "Welcome to Phone OS", scale * scale_mod, screen_w / 2 - 200, screen_h / 2, alpha, COLOR_TEXT);
+
+        const char *text = "Welcome to Phone OS";
+        float final_scale = scale * scale_mod;
+        int text_w = measure_text_width(&font, text, final_scale);
+        int x = (screen_w - text_w) / 2;
+        int y = screen_h / 2 + (int)scroll_y;
+
+        draw_text(fbp, &font, text, final_scale, x, y, alpha, COLOR_TEXT);
+
         usleep(16000);
     }
 
