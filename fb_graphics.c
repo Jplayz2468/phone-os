@@ -1,118 +1,59 @@
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/fb.h>
-#include <linux/input.h>
-#include <string.h>
-#include <time.h>
-#include <poll.h>
-#include <signal.h>
-#include <math.h>
 #include <sys/mman.h>
+#include <linux/fb.h>
 
-#define COLOR_BG 0xFF1A1A1A
-#define COLOR_TOUCH 0xFF0078D4
-#define MAX_TOUCH 8
+uint32_t *fb;
+int fb_fd, width, height, stride;
 
-int running = 1;
-struct fb_var_screeninfo vinfo;
-struct fb_fix_screeninfo finfo;
-uint32_t *fbp = NULL, *back = NULL;
-int fb_fd, w, h, line_len;
-
-struct TouchDev { int fd, minx, maxx, miny, maxy; } tdev[MAX_TOUCH];
-int num_touch = 0;
-struct { int x, y, pressed; } touch = {0}, last = {0};
-
-void handle_sig(int sig) { running = 0; }
-
-void draw_pixel(uint32_t *buf, int x, int y, uint32_t c) {
-    if (x >= 0 && x < w && y >= 0 && y < h) buf[y * w + x] = c;
-}
-void draw_circle(uint32_t *buf, int cx, int cy, int r, uint32_t c) {
-    for (int y = -r; y <= r; y++) {
-        for (int x = -r; x <= r; x++) {
-            if (x*x + y*y <= r*r) draw_pixel(buf, cx + x, cy + y, c);
-        }
+void draw_char(uint32_t *fb, int x0, int y0, stbtt_bakedchar *cdata, char ch, unsigned char *bitmap, int b_w, int b_h, uint32_t color) {
+    stbtt_bakedchar *b = &cdata[ch - 32];
+    int w = b->x1 - b->x0;
+    int h = b->y1 - b->y0;
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        int alpha = bitmap[(y + b->y0) * b_w + (x + b->x0)];
+        if (alpha > 128) fb[(y0 + y) * width + (x0 + x)] = color;
     }
 }
-void clear(uint32_t *buf, uint32_t c) {
-    for (int i = 0; i < w * h; i++) buf[i] = c;
-}
-void swap() {
-    for (int y = 0; y < h; y++) memcpy((char*)fbp + y*line_len, &back[y*w], w*4);
-}
-
-int init_touch() {
-    for (int i = 0; i < 16 && num_touch < MAX_TOUCH; i++) {
-        char path[64]; snprintf(path, 64, "/dev/input/event%d", i);
-        int fd = open(path, O_RDONLY | O_NONBLOCK); if (fd < 0) continue;
-        struct input_absinfo ax, ay;
-        if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) { close(fd); continue; }
-        tdev[num_touch++] = (struct TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
-    }
-    return num_touch > 0;
-}
-void read_touch() {
-    struct pollfd pf[MAX_TOUCH];
-    for (int i = 0; i < num_touch; i++) {
-        pf[i].fd = tdev[i].fd;
-        pf[i].events = POLLIN;
-        pf[i].revents = 0;
-    }
-    if (poll(pf, num_touch, 0) <= 0) return;
-    for (int i = 0; i < num_touch; i++) if (pf[i].revents & POLLIN) {
-        struct input_event e;
-        while (read(tdev[i].fd, &e, sizeof(e)) == sizeof(e)) {
-            if (e.type == EV_ABS) {
-                if (e.code == ABS_X || e.code == ABS_MT_POSITION_X)
-                    touch.x = (e.value - tdev[i].minx) * w / (tdev[i].maxx - tdev[i].minx + 1);
-                if (e.code == ABS_Y || e.code == ABS_MT_POSITION_Y)
-                    touch.y = (e.value - tdev[i].miny) * h / (tdev[i].maxy - tdev[i].miny + 1);
-                if (e.code == ABS_MT_TRACKING_ID)
-                    touch.pressed = (e.value >= 0);
-            }
-            if (e.type == EV_KEY && e.code == BTN_TOUCH) touch.pressed = e.value;
-        }
-    }
-}
-void read_keys() {
-    int ch = getchar();
-    if (ch == 'q') running = 0;
-    if (ch == 'w') touch.y -= 10;
-    if (ch == 's') touch.y += 10;
-    if (ch == 'a') touch.x -= 10;
-    if (ch == 'd') touch.x += 10;
-    if (ch == ' ') touch.pressed = 1;
-}
-
-void loop() {
-    while (running) {
-        last = touch;
-        if (num_touch) read_touch(); else read_keys();
-        clear(back, COLOR_BG);
-        if (touch.pressed) draw_circle(back, touch.x, touch.y, 30, COLOR_TOUCH);
-        swap();
-        usleep(16000);
+void draw_text(uint32_t *fb, int x, int y, const char *text, stbtt_bakedchar *cdata, unsigned char *bitmap, int bw, int bh, uint32_t color) {
+    while (*text) {
+        draw_char(fb, x, y, cdata, *text, bitmap, bw, bh, color);
+        x += 20;
+        text++;
     }
 }
 
 int main() {
-    signal(SIGINT, handle_sig);
+    // Load font
+    FILE *f = fopen("Inter-Regular.otf", "rb");
+    fseek(f, 0, SEEK_END); int size = ftell(f); rewind(f);
+    unsigned char *ttf = malloc(size); fread(ttf, 1, size, f); fclose(f);
+
+    stbtt_bakedchar cdata[96];
+    unsigned char *bitmap = malloc(512 * 512);
+    stbtt_BakeFontBitmap(ttf, 0, 32.0f, bitmap, 512, 512, 32, 96, cdata);
+    free(ttf);
+
+    // Init FB
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
     fb_fd = open("/dev/fb0", O_RDWR);
-    ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
     ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo);
-    w = vinfo.xres; h = vinfo.yres; line_len = finfo.line_length;
-    fbp = mmap(0, line_len * h, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
-    posix_memalign((void**)&back, 64, w * h * 4);
-    system("stty raw -echo");
-    init_touch();
-    loop();
-    system("stty sane");
-    munmap(fbp, line_len * h); free(back); close(fb_fd);
-    for (int i = 0; i < num_touch; i++) close(tdev[i].fd);
+    ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
+    width = vinfo.xres; height = vinfo.yres; stride = finfo.line_length;
+    fb = mmap(0, stride * height, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+
+    for (int i = 0; i < width * height; i++) fb[i] = 0xFF111111;
+    draw_text(fb, 100, 100, "Hello, Phone OS!", cdata, bitmap, 512, 512, 0xFFFFFFFF);
+
+    sleep(5);
+    munmap(fb, stride * height); close(fb_fd);
+    free(bitmap);
     return 0;
 }
