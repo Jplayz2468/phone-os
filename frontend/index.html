@@ -9,6 +9,9 @@
       background: black;
       font-family: sans-serif;
       color: lime;
+      cursor: none;
+      width: 100vw;
+      height: 100vh;
     }
     #fps {
       position: absolute;
@@ -20,6 +23,11 @@
       z-index: 10;
     }
     canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
       display: block;
     }
   </style>
@@ -30,8 +38,16 @@
   <script>
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      imageData = ctx.createImageData(canvas.width, canvas.height);
+      data = imageData.data;
+    }
+
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
 
     let imageData = ctx.createImageData(canvas.width, canvas.height);
     let data = imageData.data;
@@ -44,12 +60,11 @@
         for (let x = 0; x < w; x++) {
           const i = (y * w + x) * 4;
           const value =
-            128 +
-            127 * Math.sin(x * 0.01 + time * 0.002) * Math.cos(y * 0.01 + time * 0.002);
-          data[i] = (value + angle) % 255;        // R
-          data[i + 1] = (value * 0.8) % 255;      // G
-          data[i + 2] = (255 - value) % 255;      // B
-          data[i + 3] = 255;                      // A
+            128 + 127 * Math.sin(x * 0.01 + time * 0.002) * Math.cos(y * 0.01 + time * 0.002);
+          data[i] = (value + angle) % 255;
+          data[i + 1] = (value * 0.8) % 255;
+          data[i + 2] = (255 - value) % 255;
+          data[i + 3] = 255;
         }
       }
       angle += 0.5;
@@ -79,13 +94,6 @@
     socket.onmessage = (msg) => {
       document.body.style.background = msg.data;
     };
-
-    window.addEventListener("resize", () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      imageData = ctx.createImageData(canvas.width, canvas.height);
-      data = imageData.data;
-    });
   </script>
 </body>
 </html>
