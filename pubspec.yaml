@@ -1,0 +1,10 @@
+name: phone_os_flutter
+description: Phone OS in Flutter
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^2.4.0
+
+flutter:
+  uses-material-design: true
