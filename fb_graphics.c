@@ -5,6 +5,8 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <linux/fb.h>
+#include <linux/kd.h>
+#include <linux/vt.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -52,40 +54,98 @@ typedef struct {
 static volatile int running = 1;
 static FrameBuffer fb;
 static struct termios orig_termios;
+static int console_fd = -1;
+static int orig_kb_mode = -1;
+static int orig_console_mode = -1;
+static FILE *orig_stdout = NULL;
+static FILE *orig_stderr = NULL;
 
 void signal_handler(int sig) {
     running = 0;
 }
 
-// Hide terminal cursor and disable echo
+// Nuclear option: completely take over the display
 void setup_terminal() {
-    // Get current terminal attributes
+    // Save original stdout/stderr for cleanup messages
+    orig_stdout = stdout;
+    orig_stderr = stderr;
+    
+    // Open console device
+    console_fd = open("/dev/console", O_RDWR);
+    if (console_fd < 0) {
+        console_fd = open("/dev/tty0", O_RDWR);
+    }
+    if (console_fd < 0) {
+        console_fd = STDIN_FILENO;
+    }
+    
+    // Get current keyboard mode
+    if (ioctl(console_fd, KDGKBMODE, &orig_kb_mode) == 0) {
+        // Set keyboard to raw mode (prevents any character processing)
+        ioctl(console_fd, KDSKBMODE, K_RAW);
+    }
+    
+    // Get current console mode
+    if (ioctl(console_fd, KDGETMODE, &orig_console_mode) == 0) {
+        // Set console to graphics mode (disables text console completely)
+        ioctl(console_fd, KDSETMODE, KD_GRAPHICS);
+    }
+    
+    // Additional terminal control for good measure
     tcgetattr(STDIN_FILENO, &orig_termios);
-    
-    // Hide cursor
-    printf("\033[?25l");
-    
-    // Set terminal to raw mode (no echo, no buffering)
     struct termios raw = orig_termios;
-    raw.c_lflag &= ~(ECHO | ICANON);
+    raw.c_lflag &= ~(ECHO | ICANON | ISIG);
+    raw.c_iflag &= ~(IXON | ICRNL);
+    raw.c_oflag &= ~OPOST;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
     
-    // Clear screen
-    printf("\033[2J\033[H");
+    // Multiple cursor hiding attempts
+    printf("\033[?25l");      // Hide cursor
+    printf("\033[?7l");       // Disable line wrapping
+    printf("\033[?47h");      // Save screen & switch to alternate buffer
+    printf("\033[2J");        // Clear screen
+    printf("\033[H");         // Home cursor
+    printf("\033[0m");        // Reset all attributes
     fflush(stdout);
+    
+    // Redirect stdout/stderr to null after setup to prevent any bleeding
+    freopen("/dev/null", "w", stdout);
+    freopen("/dev/null", "w", stderr);
 }
 
-// Restore terminal settings
+// Restore everything back to normal
 void restore_terminal() {
-    // Show cursor
-    printf("\033[?25h");
+    // Restore stdout/stderr first so we can print cleanup messages
+    if (orig_stdout) {
+        stdout = orig_stdout;
+        stderr = orig_stderr;
+    }
     
-    // Restore original terminal attributes
+    printf("Restoring terminal...\n");
+    
+    // Restore console mode
+    if (console_fd >= 0 && orig_console_mode >= 0) {
+        ioctl(console_fd, KDSETMODE, orig_console_mode);
+    }
+    
+    // Restore keyboard mode
+    if (console_fd >= 0 && orig_kb_mode >= 0) {
+        ioctl(console_fd, KDSKBMODE, orig_kb_mode);
+    }
+    
+    // Restore terminal
+    printf("\033[?47l");      // Restore screen & switch back from alternate buffer
+    printf("\033[?25h");      // Show cursor
+    printf("\033[?7h");       // Enable line wrapping
+    printf("\033[0m");        // Reset attributes
+    printf("\033[2J\033[H");  // Clear and home
+    fflush(stdout);
+    
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
     
-    // Clear screen and reset
-    printf("\033[2J\033[H");
-    fflush(stdout);
+    if (console_fd >= 0 && console_fd != STDIN_FILENO) {
+        close(console_fd);
+    }
 }
 
 // Fast rectangle fill using 64-bit writes where possible
@@ -316,18 +376,20 @@ void render_frame(MovingRect *rects, int num_rects, uint64_t frame_count) {
 }
 
 int main() {
+    // Print setup messages before we redirect output
     printf("Orange Pi 5 High-Performance Framebuffer Demo\n");
-    printf("Target: High-performance graphics @ 60fps\n");
-    printf("Press Ctrl+C to exit\n");
+    printf("Taking control of display hardware...\n");
+    printf("Press Ctrl+C to exit (may need to press multiple times)\n");
+    fflush(stdout);
     
     // Set up signal handler for clean exit
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // Set up terminal (hide cursor, disable echo)
+    // Nuclear option: completely take over the display
     setup_terminal();
     
-    // Initialize framebuffer
+    // Initialize framebuffer  
     if (init_framebuffer() < 0) {
         restore_terminal();
         return 1;
@@ -352,10 +414,9 @@ int main() {
     
     uint64_t frame_count = 0;
     uint64_t last_time = get_time_ns();
-    uint64_t fps_counter = 0;
-    uint64_t fps_time = last_time;
     
-    printf("Starting render loop... (Ctrl+C to exit)\n");
+    // Remove FPS printing entirely since stdout is redirected
+    // Graphics will speak for themselves!
     
     while (running) {
         uint64_t frame_start = get_time_ns();
@@ -367,15 +428,6 @@ int main() {
         swap_buffers();
         
         frame_count++;
-        fps_counter++;
-        
-        // Print FPS every 5 seconds to be less intrusive
-        if (frame_start - fps_time >= 5000000000) {
-            printf("\rFPS: %lu, Frame: %lu", fps_counter / 5, frame_count);
-            fflush(stdout);
-            fps_counter = 0;
-            fps_time = frame_start;
-        }
         
         // Frame rate limiting
         uint64_t frame_end = get_time_ns();
@@ -393,7 +445,8 @@ int main() {
         last_time = frame_start;
     }
     
-    printf("\nExiting gracefully...\n");
+    // Restore everything and exit gracefully
     cleanup_framebuffer();
+    printf("Graphics demo ended.\n");
     return 0;
 }
