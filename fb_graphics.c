@@ -48,7 +48,10 @@
 #define TARGET_FPS 60
 #define FRAME_TIME_NS (1000000000 / TARGET_FPS)
 
-// Forward declarations for types
+#define MAX_TOUCH_EVENTS 32
+#define MAX_APPS 12
+#define TARGET_FPS 60
+#define FRAME_TIME_NS (1000000000 / TARGET_FPS)
 typedef enum {
     SCREEN_HOME,
     SCREEN_CALCULATOR,
@@ -600,9 +603,6 @@ void cleanup_touch_system() {
     touch_system.touch_available = 0;
 }
 
-// Forward declarations
-void handle_touch_input();
-
 // Updated input handling using new touch system
 
 void draw_home_screen() {
@@ -836,6 +836,70 @@ void draw_settings_screen() {
     draw_text(fb.backbuffer, 65, 55, "Back", COLOR_WHITE, screen_width, screen_height);
 }
 
+// Touch input handling
+void handle_touch_input() {
+    if (!touch_system.touch_available) return;
+    
+    SimpleGesture gesture = detect_simple_gesture();
+    TouchPoint current = get_current_touch();
+    
+    int screen_width = fb.vinfo.xres;
+    int screen_height = fb.vinfo.yres;
+    
+    // Handle gestures based on current screen
+    switch (ui.current_screen) {
+        case SCREEN_HOME:
+            if (gesture == GESTURE_TAP) {
+                printf("Tap detected at %d, %d\n", current.x, current.y);
+                
+                // Check app icons (3x2 grid)
+                int apps_per_row = 3;
+                int icon_size = 120;
+                int icon_margin = 40;
+                int start_y = 150;
+                
+                for (int i = 0; i < 6; i++) {
+                    int row = i / apps_per_row;
+                    int col = i % apps_per_row;
+                    
+                    int x = col * (icon_size + icon_margin) + icon_margin + 
+                           (screen_width - (apps_per_row * (icon_size + icon_margin) - icon_margin)) / 2;
+                    int y = start_y + row * (icon_size + 100);
+                    
+                    if (current.x >= x && current.x <= x + icon_size &&
+                        current.y >= y && current.y <= y + icon_size) {
+                        printf("Opening app: %s\n", ui.apps[i].name);
+                        ui.current_screen = ui.apps[i].screen;
+                        break;
+                    }
+                }
+                
+                // Check dock apps
+                int dock_y = screen_height - 200;
+                for (int i = 6; i < ui.num_apps; i++) {
+                    int x = 80 + (i - 6) * 150;
+                    if (current.x >= x && current.x <= x + 80 &&
+                        current.y >= dock_y + 20 && current.y <= dock_y + 100) {
+                        printf("Opening dock app: %s\n", ui.apps[i].name);
+                        ui.current_screen = ui.apps[i].screen;
+                        break;
+                    }
+                }
+            }
+            break;
+            
+        default:
+            // Back button for all other screens
+            if (gesture == GESTURE_TAP &&
+                current.x >= 40 && current.x <= 140 &&
+                current.y >= 40 && current.y <= 90) {
+                printf("Back button pressed\n");
+                ui.current_screen = SCREEN_HOME;
+            }
+            break;
+    }
+}
+
 void handle_touch_input() {
     if (!touch_system.touch_available) return;
     
@@ -939,71 +1003,6 @@ void render_ui() {
         draw_text(fb.backbuffer, current_touch.x - 30, current_touch.y - 50, coord_text, COLOR_WHITE, screen_width, screen_height);
     }
 }
-
-void handle_touch_input() {
-    if (!touch_system.touch_available) return;
-    
-    SimpleGesture gesture = detect_simple_gesture();
-    TouchPoint current = get_current_touch();
-    
-    int screen_width = fb.vinfo.xres;
-    int screen_height = fb.vinfo.yres;
-    
-    // Handle gestures based on current screen
-    switch (ui.current_screen) {
-        case SCREEN_HOME:
-            if (gesture == GESTURE_TAP) {
-                printf("Tap detected at %d, %d\n", current.x, current.y);
-                
-                // Check app icons (3x2 grid)
-                int apps_per_row = 3;
-                int icon_size = 120;
-                int icon_margin = 40;
-                int start_y = 150;
-                
-                for (int i = 0; i < 6; i++) {
-                    int row = i / apps_per_row;
-                    int col = i % apps_per_row;
-                    
-                    int x = col * (icon_size + icon_margin) + icon_margin + 
-                           (screen_width - (apps_per_row * (icon_size + icon_margin) - icon_margin)) / 2;
-                    int y = start_y + row * (icon_size + 100);
-                    
-                    if (current.x >= x && current.x <= x + icon_size &&
-                        current.y >= y && current.y <= y + icon_size) {
-                        printf("Opening app: %s\n", ui.apps[i].name);
-                        ui.current_screen = ui.apps[i].screen;
-                        break;
-                    }
-                }
-                
-                // Check dock apps
-                int dock_y = screen_height - 200;
-                for (int i = 6; i < ui.num_apps; i++) {
-                    int x = 80 + (i - 6) * 150;
-                    if (current.x >= x && current.x <= x + 80 &&
-                        current.y >= dock_y + 20 && current.y <= dock_y + 100) {
-                        printf("Opening dock app: %s\n", ui.apps[i].name);
-                        ui.current_screen = ui.apps[i].screen;
-                        break;
-                    }
-                }
-            }
-            break;
-            
-        default:
-            // Back button for all other screens
-            if (gesture == GESTURE_TAP &&
-                current.x >= 40 && current.x <= 140 &&
-                current.y >= 40 && current.y <= 90) {
-                printf("Back button pressed\n");
-                ui.current_screen = SCREEN_HOME;
-            }
-            break;
-    }
-}
-
-// Framebuffer initialization
 int init_framebuffer() {
     fb.fb_fd = open("/dev/fb0", O_RDWR);
     if (fb.fb_fd == -1) {
