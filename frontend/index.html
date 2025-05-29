@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <style>
     * {
       margin: 0;
@@ -9,52 +11,81 @@
     }
     
     html, body {
-      width: 100%;
-      height: 100%;
+      width: 1080px !important;
+      height: 1920px !important;
+      max-width: 1080px !important;
+      max-height: 1920px !important;
+      min-width: 1080px !important;
+      min-height: 1920px !important;
       overflow: hidden;
       background: black;
       font-family: sans-serif;
       color: lime;
       cursor: none;
-    }
-    
-    #container {
       position: fixed;
       top: 0;
       left: 0;
-      width: 100%;
-      height: 100%;
+    }
+    
+    #container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1080px;
+      height: 1920px;
       background: black;
+      border: 2px solid red; /* Debug border */
     }
     
     #fps {
-      position: fixed;
-      top: 10px;
-      left: 10px;
-      padding: 5px 10px;
-      font-size: 16px;
-      background: rgba(0, 0, 0, 0.8);
-      border: 1px solid lime;
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      padding: 10px 15px;
+      font-size: 24px;
+      background: rgba(0, 0, 0, 0.9);
+      border: 2px solid lime;
       z-index: 100;
     }
     
     #content {
-      position: fixed;
+      position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
       text-align: center;
-      font-size: 48px;
+      width: 800px;
+    }
+    
+    h1 {
+      font-size: 72px;
+      margin-bottom: 40px;
       color: lime;
     }
     
     #colorBox {
-      width: 200px;
-      height: 200px;
-      margin: 20px auto;
-      border: 2px solid lime;
+      width: 400px;
+      height: 400px;
+      margin: 40px auto;
+      border: 4px solid lime;
       background: darkgreen;
       transition: background-color 0.5s ease;
+    }
+    
+    p {
+      font-size: 48px;
+      margin-top: 40px;
+      color: lime;
+    }
+    
+    #debug {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      font-size: 20px;
+      color: yellow;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 10px;
     }
   </style>
 </head>
@@ -62,14 +93,35 @@
   <div id="container">
     <div id="fps">FPS: --</div>
     <div id="content">
-      <h1>FULLSCREEN TEST</h1>
+      <h1>PORTRAIT MODE</h1>
       <div id="colorBox"></div>
-      <p>Orange Pi 5 Display</p>
+      <p>Orange Pi 5 - 1080x1920</p>
+    </div>
+    <div id="debug">
+      Size: <span id="sizeInfo">--</span>
     </div>
   </div>
 
   <script>
-    // Simple FPS counter
+    // Debug info
+    function updateDebugInfo() {
+      document.getElementById('sizeInfo').textContent = 
+        `${window.innerWidth}x${window.innerHeight} | Screen: ${screen.width}x${screen.height}`;
+    }
+    
+    updateDebugInfo();
+    window.addEventListener('resize', updateDebugInfo);
+
+    // Force exact dimensions
+    function enforceSize() {
+      document.documentElement.style.width = '1080px';
+      document.documentElement.style.height = '1920px';
+      document.body.style.width = '1080px';
+      document.body.style.height = '1920px';
+      updateDebugInfo();
+    }
+
+    // FPS counter
     let lastTime = performance.now();
     let frames = 0;
     let fps = 0;
@@ -87,17 +139,12 @@
     }
 
     updateFPS();
-
-    // Force fullscreen on load
-    function forceFullscreen() {
-      document.documentElement.style.width = '100%';
-      document.documentElement.style.height = '100%';
-      document.body.style.width = '100%';
-      document.body.style.height = '100%';
-    }
-
-    window.addEventListener('load', forceFullscreen);
-    window.addEventListener('resize', forceFullscreen);
+    
+    window.addEventListener('load', enforceSize);
+    window.addEventListener('resize', enforceSize);
+    
+    // Enforce size every second as backup
+    setInterval(enforceSize, 1000);
 
     // WebSocket connection
     const socket = new WebSocket("ws://localhost:8765");
@@ -105,7 +152,7 @@
     
     socket.onmessage = (msg) => {
       document.body.style.background = msg.data;
-      colorBox.style.background = msg.data === 'black' ? 'darkgreen' : 'black';
+      colorBox.style.background = msg.data === 'black' ? 'darkgreen' : 'darkred';
     };
 
     socket.onerror = (error) => {
