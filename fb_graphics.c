@@ -36,7 +36,10 @@ TouchDev touch_devs[MAX_TOUCH_DEVICES];
 int num_touch = 0;
 
 typedef struct {
-    int x, y, pressed, just_pressed;
+    int x, y;
+    int pressed;
+    int last_pressed;
+    int just_pressed;
 } TouchState;
 
 TouchState touch = {0};
@@ -116,19 +119,26 @@ void read_touch() {
     for (int i = 0; i < num_touch; i++) {
         if (!(fds[i].revents & POLLIN)) continue;
         struct input_event ev;
+        int raw_x = touch.x;
+        int raw_y = touch.y;
+        int tracking = touch.pressed;
+
         while (read(touch_devs[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
             if (ev.type == EV_ABS) {
                 if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X)
-                    touch.x = (ev.value - touch_devs[i].min_x) * screen_w / (touch_devs[i].max_x - touch_devs[i].min_x + 1);
+                    raw_x = (ev.value - touch_devs[i].min_x) * screen_w / (touch_devs[i].max_x - touch_devs[i].min_x + 1);
                 if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y)
-                    touch.y = (ev.value - touch_devs[i].min_y) * screen_h / (touch_devs[i].max_y - touch_devs[i].min_y + 1);
-                if (ev.code == ABS_MT_TRACKING_ID) {
-                    if (ev.value == -1) touch.pressed = 0;
-                    else { touch.pressed = 1; touch.just_pressed = 1; }
-                }
+                    raw_y = (ev.value - touch_devs[i].min_y) * screen_h / (touch_devs[i].max_y - touch_devs[i].min_y + 1);
+                if (ev.code == ABS_MT_TRACKING_ID)
+                    tracking = (ev.value >= 0);
             } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-                if (!touch.pressed && ev.value) touch.just_pressed = 1;
-                touch.pressed = ev.value;
+                tracking = ev.value;
+            } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                touch.last_pressed = touch.pressed;
+                touch.pressed = tracking;
+                touch.just_pressed = (touch.pressed && !touch.last_pressed);
+                touch.x = raw_x;
+                touch.y = raw_y;
             }
         }
     }
@@ -164,7 +174,7 @@ void cleanup(int sig) {
     if (backbuffer) free(backbuffer);
     if (fbp) munmap(fbp, stride * screen_h);
     if (fb_fd > 0) close(fb_fd);
-    printf("\n🧹 Cleaned up framebuffer\n");
+    printf("\n\U0001F9F9 Cleaned up framebuffer\n");
     exit(0);
 }
 
@@ -228,6 +238,10 @@ int main() {
         int x = (screen_w - text_w) / 2 + x_offset;
         int y = screen_h / 2 + y_offset;
         draw_text(backbuffer, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
+
+        if (touch.pressed) {
+            draw_text(backbuffer, &font, "TOUCH!", scale * 0.4f, touch.x, touch.y, 1.0f, COLOR_TEXT);
+        }
 
         memcpy(fbp, backbuffer, screen_w * screen_h * 4);
 
