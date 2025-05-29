@@ -2,32 +2,90 @@
 <html>
 <head>
   <style>
-    body {
+    html, body {
       margin: 0;
+      padding: 0;
+      overflow: hidden;
       background: black;
-      color: lime;
       font-family: sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
+      color: lime;
     }
-    h1 {
-      font-size: 3em;
-      animation: pulse 1s infinite;
+    #fps {
+      position: absolute;
+      top: 0;
+      left: 0;
+      padding: 10px;
+      font-size: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 10;
     }
-    @keyframes pulse {
-      0% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.2); opacity: 0.5; }
-      100% { transform: scale(1); opacity: 1; }
+    canvas {
+      display: block;
     }
   </style>
 </head>
 <body>
-  <h1>Hello Phone UI</h1>
+  <div id="fps">FPS: --</div>
+  <canvas id="canvas"></canvas>
   <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const particles = Array.from({ length: 300 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      r: Math.random() * 3 + 1,
+      dx: Math.random() * 2 - 1,
+      dy: Math.random() * 2 - 1,
+      hue: Math.random() * 360
+    }));
+
+    let lastTime = performance.now();
+    let frames = 0;
+    let fps = 0;
+
+    function animate(now) {
+      frames++;
+      if (now - lastTime >= 1000) {
+        fps = frames;
+        frames = 0;
+        lastTime = now;
+        document.getElementById("fps").innerText = `FPS: ${fps}`;
+      }
+
+      ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (let p of particles) {
+        ctx.beginPath();
+        ctx.fillStyle = `hsl(${p.hue}, 100%, 50%)`;
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+
+        p.x += p.dx;
+        p.y += p.dy;
+        p.hue += 1;
+
+        if (p.x < 0 || p.x > canvas.width) p.dx *= -1;
+        if (p.y < 0 || p.y > canvas.height) p.dy *= -1;
+      }
+
+      requestAnimationFrame(animate);
+    }
+
+    animate(performance.now());
+
     const socket = new WebSocket("ws://localhost:8765");
-    socket.onmessage = (msg) => document.body.style.background = msg.data;
+    socket.onmessage = (msg) => {
+      document.body.style.background = msg.data;
+    };
+
+    window.addEventListener("resize", () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
   </script>
 </body>
 </html>
