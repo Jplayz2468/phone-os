@@ -119,6 +119,8 @@
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
+      transition: transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      -webkit-transition: -webkit-transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
     
     .clock-widget {
@@ -222,6 +224,8 @@
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
+      transition: transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      -webkit-transition: -webkit-transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
     
     .app-screen.active {
@@ -379,6 +383,8 @@
       border: 2px solid rgba(255, 255, 255, 0.3);
       will-change: transform;
       backface-visibility: hidden;
+      transition: transform 400ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      -webkit-transition: -webkit-transform 400ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
     
     .notification.show {
@@ -575,38 +581,12 @@
     // Start FPS monitoring
     requestAnimationFrame(updateFPS);
 
-    // Smooth animation system
-    function animateElement(element, fromTransform, toTransform, duration = 250, callback) {
-      if (isAnimating) return;
+    // Simplified animation system using CSS transitions
+    function setAnimationLock(duration) {
       isAnimating = true;
-      
-      const startTime = performance.now();
-      
-      function animate(currentTime) {
-        const elapsed = currentTime - startTime;
-        const progress = Math.min(elapsed / duration, 1);
-        
-        // Use easeOutCubic for smooth animation
-        const eased = 1 - Math.pow(1 - progress, 3);
-        
-        // Interpolate between transforms
-        if (fromTransform.includes('translateX') && toTransform.includes('translateX')) {
-          const fromX = parseFloat(fromTransform.match(/-?\d+/)[0]);
-          const toX = parseFloat(toTransform.match(/-?\d+/)[0]);
-          const currentX = fromX + (toX - fromX) * eased;
-          element.style.transform = `translate3d(${currentX}px, 0, 0)`;
-        }
-        
-        if (progress < 1) {
-          requestAnimationFrame(animate);
-        } else {
-          element.style.transform = toTransform;
-          isAnimating = false;
-          if (callback) callback();
-        }
-      }
-      
-      requestAnimationFrame(animate);
+      setTimeout(() => {
+        isAnimating = false;
+      }, duration + 50); // Add small buffer
     }
 
     // WebSocket connection
@@ -693,6 +673,7 @@
 
     function openApp(appId) {
       if (isAnimating) return;
+      setAnimationLock(600);
       
       // Close any currently open app first
       document.querySelectorAll('.app-screen').forEach(screen => {
@@ -703,9 +684,11 @@
       currentApp = appId;
       const homeScreen = document.getElementById('homeScreen');
       
-      // Animate home screen out
-      animateElement(homeScreen, 'translate3d(0, 0, 0)', 'translate3d(-1080px, 0, 0)', 250, () => {
-        // Show the app screen after home screen is out
+      // Move home screen out immediately with CSS transition
+      homeScreen.style.transform = 'translate3d(-1080px, 0, 0)';
+      
+      // Show the app screen after a short delay
+      setTimeout(() => {
         let appScreen;
         if (appId === 'calculator') {
           appScreen = document.getElementById('calculatorApp');
@@ -716,11 +699,9 @@
           document.getElementById('genericAppTitle').textContent = apps[appId]?.name || 'App';
         }
         
-        // Animate app screen in
-        animateElement(appScreen, 'translate3d(1080px, 0, 0)', 'translate3d(0, 0, 0)', 250, () => {
-          appScreen.classList.add('active');
-        });
-      });
+        // Trigger CSS transition for app screen
+        appScreen.classList.add('active');
+      }, 100);
       
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
@@ -732,19 +713,20 @@
 
     function goHome() {
       if (isAnimating) return;
+      setAnimationLock(600);
       
       const activeScreen = document.querySelector('.app-screen.active');
       if (!activeScreen) return;
       
       const homeScreen = document.getElementById('homeScreen');
       
-      // Animate app screen out
-      animateElement(activeScreen, 'translate3d(0, 0, 0)', 'translate3d(1080px, 0, 0)', 250, () => {
-        activeScreen.classList.remove('active');
-        
-        // Animate home screen in
-        animateElement(homeScreen, 'translate3d(-1080px, 0, 0)', 'translate3d(0, 0, 0)', 250);
-      });
+      // Move app screen out with CSS transition
+      activeScreen.classList.remove('active');
+      
+      // Move home screen in after a short delay
+      setTimeout(() => {
+        homeScreen.style.transform = 'translate3d(0, 0, 0)';
+      }, 100);
       
       currentApp = 'home';
       
@@ -786,17 +768,13 @@
       document.getElementById('notificationTitle').textContent = title;
       document.getElementById('notificationMessage').textContent = message;
       
-      // Animate notification in
-      animateElement(notification, 'translate3d(0, -200px, 0)', 'translate3d(0, 0, 0)', 200, () => {
-        notification.classList.add('show');
-        
-        setTimeout(() => {
-          // Animate notification out
-          animateElement(notification, 'translate3d(0, 0, 0)', 'translate3d(0, -200px, 0)', 200, () => {
-            notification.classList.remove('show');
-          });
-        }, 3000);
-      });
+      // Show notification with CSS transition
+      notification.classList.add('show');
+      
+      setTimeout(() => {
+        // Hide notification with CSS transition
+        notification.classList.remove('show');
+      }, 3000);
     }
 
     // Settings sliders
