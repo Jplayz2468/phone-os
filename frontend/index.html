@@ -119,8 +119,13 @@
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
-      transition: transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
-      -webkit-transition: -webkit-transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      transition: transform 350ms cubic-bezier(0.2, 0, 0, 1);
+      -webkit-transition: -webkit-transform 350ms cubic-bezier(0.2, 0, 0, 1);
+    }
+    
+    .home-screen.slide-out {
+      transform: translate3d(-1080px, 0, 0);
+      -webkit-transform: translate3d(-1080px, 0, 0);
     }
     
     .clock-widget {
@@ -224,13 +229,18 @@
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
-      transition: transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
-      -webkit-transition: -webkit-transform 600ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      transition: transform 350ms cubic-bezier(0.2, 0, 0, 1);
+      -webkit-transition: -webkit-transform 350ms cubic-bezier(0.2, 0, 0, 1);
     }
     
     .app-screen.active {
       transform: translate3d(0, 0, 0);
       -webkit-transform: translate3d(0, 0, 0);
+    }
+    
+    .app-screen.slide-out {
+      transform: translate3d(1080px, 0, 0);
+      -webkit-transform: translate3d(1080px, 0, 0);
     }
     
     .app-header {
@@ -383,8 +393,6 @@
       border: 2px solid rgba(255, 255, 255, 0.3);
       will-change: transform;
       backface-visibility: hidden;
-      transition: transform 400ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
-      -webkit-transition: -webkit-transform 400ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
     }
     
     .notification.show {
@@ -581,14 +589,6 @@
     // Start FPS monitoring
     requestAnimationFrame(updateFPS);
 
-    // Simplified animation system using CSS transitions
-    function setAnimationLock(duration) {
-      isAnimating = true;
-      setTimeout(() => {
-        isAnimating = false;
-      }, duration + 50); // Add small buffer
-    }
-
     // WebSocket connection
     function connectWebSocket() {
       socket = new WebSocket("ws://localhost:8765");
@@ -673,20 +673,21 @@
 
     function openApp(appId) {
       if (isAnimating) return;
-      setAnimationLock(600);
+      isAnimating = true;
       
       // Close any currently open app first
       document.querySelectorAll('.app-screen').forEach(screen => {
         screen.classList.remove('active');
+        screen.classList.add('slide-out');
       });
       
       currentApp = appId;
       const homeScreen = document.getElementById('homeScreen');
       
-      // Move home screen out immediately with CSS transition
-      homeScreen.style.transform = 'translate3d(-1080px, 0, 0)';
+      // Slide home screen out with class-based animation
+      homeScreen.classList.add('slide-out');
       
-      // Show the app screen after a short delay
+      // Show app screen with smooth timing
       setTimeout(() => {
         let appScreen;
         if (appId === 'calculator') {
@@ -698,10 +699,16 @@
           document.getElementById('genericAppTitle').textContent = apps[appId]?.name || 'App';
         }
         
-        // Clear any inline styles and trigger CSS transition
-        appScreen.style.transform = '';
+        // Slide app in with class-based animation
+        appScreen.classList.remove('slide-out');
         appScreen.classList.add('active');
-      }, 100);
+        
+        // Reset animation lock after animation completes
+        setTimeout(() => {
+          isAnimating = false;
+        }, 350);
+        
+      }, 50);
       
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
@@ -713,20 +720,30 @@
 
     function goHome() {
       if (isAnimating) return;
-      setAnimationLock(600);
+      isAnimating = true;
       
       const activeScreen = document.querySelector('.app-screen.active');
-      if (!activeScreen) return;
+      if (!activeScreen) {
+        isAnimating = false;
+        return;
+      }
       
       const homeScreen = document.getElementById('homeScreen');
       
-      // Move app screen out with CSS transition
+      // Slide app screen out with class-based animation
       activeScreen.classList.remove('active');
+      activeScreen.classList.add('slide-out');
       
-      // Move home screen in after a short delay
+      // Slide home screen in with smooth timing
       setTimeout(() => {
-        homeScreen.style.transform = 'translate3d(0, 0, 0)';
-      }, 100);
+        homeScreen.classList.remove('slide-out');
+        
+        // Reset animation lock after animation completes
+        setTimeout(() => {
+          isAnimating = false;
+        }, 350);
+        
+      }, 50);
       
       currentApp = 'home';
       
@@ -768,11 +785,11 @@
       document.getElementById('notificationTitle').textContent = title;
       document.getElementById('notificationMessage').textContent = message;
       
-      // Show notification with CSS transition
+      // Show notification instantly
       notification.classList.add('show');
       
       setTimeout(() => {
-        // Hide notification with CSS transition
+        // Hide notification instantly
         notification.classList.remove('show');
       }, 3000);
     }
@@ -793,21 +810,6 @@
           type: 'settings_change',
           volume: parseInt(e.target.value)
         }));
-      }
-    });
-
-    // Touch feedback for app icons
-    document.addEventListener('touchstart', (e) => {
-      if (e.target.closest('.app-icon')) {
-        const icon = e.target.closest('.app-icon');
-        icon.style.transform = 'translate3d(0, 0, 0) scale(0.95)';
-      }
-    });
-
-    document.addEventListener('touchend', (e) => {
-      if (e.target.closest('.app-icon')) {
-        const icon = e.target.closest('.app-icon');
-        icon.style.transform = 'translate3d(0, 0, 0) scale(1)';
       }
     });
 
