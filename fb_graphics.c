@@ -14,10 +14,7 @@
 #include <stdint.h>
 #include <signal.h>
 #include <termios.h>
-#include <dirent.h>
 #include <errno.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <poll.h>
 
 #ifndef _GNU_SOURCE
@@ -49,7 +46,6 @@ static struct {
     char name[256];
     int min_x, max_x, min_y, max_y;
 } touch_devs[MAX_TOUCH_DEVICES];
-
 static int num_touch_devs = 0;
 
 // Type definitions
@@ -69,9 +65,6 @@ typedef struct {
 } TouchPoint;
 
 typedef struct {
-    int fd;
-    int min_x, max_x;
-    int min_y, max_y;
     int screen_width, screen_height;
     TouchPoint current_touch;
     TouchPoint last_touch;
@@ -277,15 +270,14 @@ void draw_text(uint32_t *buffer, int x, int y, const char *text, uint32_t color,
     }
 }
 
-// Touch system - User's improved implementation
+// Improved touch system implementation
 int init_touch_system(int screen_w, int screen_h) {
     touch_system.touch_available = 0;
     touch_system.screen_width = screen_w;
     touch_system.screen_height = screen_h;
     num_touch_devs = 0;
 
-    printf("=== IMPROVED TOUCH SYSTEM INITIALIZATION ===\n");
-    printf("Screen resolution: %dx%d\n", screen_w, screen_h);
+    printf("=== Touch Device Detection ===\n");
 
     for (int i = 0; i < MAX_TOUCH_DEVICES; i++) {
         char path[256];
@@ -317,8 +309,7 @@ int init_touch_system(int screen_w, int screen_h) {
         printf("  Y range: %d to %d\n", abs_y.minimum, abs_y.maximum);
 
         touch_devs[num_touch_devs].fd = fd;
-        strncpy(touch_devs[num_touch_devs].name, name, sizeof(name)-1);
-        touch_devs[num_touch_devs].name[sizeof(name)-1] = '\0';
+        strncpy(touch_devs[num_touch_devs].name, name, sizeof(name));
         touch_devs[num_touch_devs].min_x = abs_x.minimum;
         touch_devs[num_touch_devs].max_x = abs_x.maximum;
         touch_devs[num_touch_devs].min_y = abs_y.minimum;
@@ -329,40 +320,17 @@ int init_touch_system(int screen_w, int screen_h) {
     touch_system.touch_available = (num_touch_devs > 0);
     
     if (touch_system.touch_available) {
-        printf("=== TOUCH SYSTEM READY ===\n");
-        printf("Found %d touch device(s)\n", num_touch_devs);
-        
+        printf("=== Touch system initialized with %d devices ===\n", num_touch_devs);
         // Initialize touch state
         touch_system.current_touch.x = screen_w / 2;
         touch_system.current_touch.y = screen_h / 2;
         touch_system.current_touch.pressed = 0;
         touch_system.last_touch = touch_system.current_touch;
     } else {
-        printf("=== NO TOUCH DEVICES FOUND ===\n");
+        printf("=== No touch devices found ===\n");
     }
     
     return touch_system.touch_available ? 0 : -1;
-}
-
-void map_touch_to_screen(int touch_x, int touch_y, int *screen_x, int *screen_y) {
-    if (touch_system.max_x > touch_system.min_x) {
-        *screen_x = (touch_x - touch_system.min_x) * touch_system.screen_width / 
-                    (touch_system.max_x - touch_system.min_x);
-    } else {
-        *screen_x = touch_x;
-    }
-    
-    if (touch_system.max_y > touch_system.min_y) {
-        *screen_y = (touch_y - touch_system.min_y) * touch_system.screen_height / 
-                    (touch_system.max_y - touch_system.min_y);
-    } else {
-        *screen_y = touch_y;
-    }
-    
-    if (*screen_x < 0) *screen_x = 0;
-    if (*screen_x >= touch_system.screen_width) *screen_x = touch_system.screen_width - 1;
-    if (*screen_y < 0) *screen_y = 0;
-    if (*screen_y >= touch_system.screen_height) *screen_y = touch_system.screen_height - 1;
 }
 
 int process_touch_events() {
@@ -383,38 +351,30 @@ int process_touch_events() {
 
         struct input_event ev;
         while (read(fds[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
-            printf("Touch event from device %d: type=%d code=%d value=%d\n", i, ev.type, ev.code, ev.value);
-            
             if (ev.type == EV_ABS) {
                 if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
-                    int range = touch_devs[i].max_x - touch_devs[i].min_x + 1;
-                    if (range > 0) {
-                        touch_system.current_touch.x = (ev.value - touch_devs[i].min_x) * touch_system.screen_width / range;
-                        printf("  -> X mapped: %d -> %d\n", ev.value, touch_system.current_touch.x);
-                    }
+                    touch_system.current_touch.x = (ev.value - touch_devs[i].min_x) * 
+                        touch_system.screen_width / (touch_devs[i].max_x - touch_devs[i].min_x + 1);
+                    printf("Touch X: %d -> screen %d\n", ev.value, touch_system.current_touch.x);
                 }
                 if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
-                    int range = touch_devs[i].max_y - touch_devs[i].min_y + 1;
-                    if (range > 0) {
-                        touch_system.current_touch.y = (ev.value - touch_devs[i].min_y) * touch_system.screen_height / range;
-                        printf("  -> Y mapped: %d -> %d\n", ev.value, touch_system.current_touch.y);
-                    }
+                    touch_system.current_touch.y = (ev.value - touch_devs[i].min_y) * 
+                        touch_system.screen_height / (touch_devs[i].max_y - touch_devs[i].min_y + 1);
+                    printf("Touch Y: %d -> screen %d\n", ev.value, touch_system.current_touch.y);
                 }
                 if (ev.code == ABS_MT_TRACKING_ID && ev.value == -1) {
                     touch_system.current_touch.pressed = 0;
-                    printf("  -> Touch RELEASED (tracking ID)\n");
+                    printf("Touch UP (tracking)\n");
                 } else if (ev.code == ABS_MT_TRACKING_ID && ev.value >= 0) {
                     touch_system.current_touch.pressed = 1;
-                    printf("  -> Touch PRESSED (tracking ID)\n");
+                    printf("Touch DOWN (tracking)\n");
                 }
             } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
                 touch_system.current_touch.pressed = ev.value;
-                printf("  -> Touch %s (BTN_TOUCH)\n", ev.value ? "PRESSED" : "RELEASED");
+                printf("Touch %s (button)\n", ev.value ? "DOWN" : "UP");
             } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
                 touch_system.last_touch = touch_system.current_touch;
                 touch_system.current_touch.timestamp = get_time_ns();
-                printf("  -> SYN_REPORT: Touch at (%d,%d) pressed=%d\n", 
-                       touch_system.current_touch.x, touch_system.current_touch.y, touch_system.current_touch.pressed);
                 found = 1;
             }
         }
@@ -422,6 +382,7 @@ int process_touch_events() {
     return found;
 }
 
+// Touch helper functions
 TouchPoint get_current_touch() {
     return touch_system.current_touch;
 }
@@ -463,105 +424,69 @@ SimpleGesture detect_simple_gesture() {
 }
 
 void cleanup_touch_system() {
-    if (touch_system.fd >= 0) {
-        close(touch_system.fd);
-        touch_system.fd = -1;
+    for (int i = 0; i < num_touch_devs; i++) {
+        if (touch_devs[i].fd >= 0) {
+            close(touch_devs[i].fd);
+            touch_devs[i].fd = -1;
+        }
     }
+    num_touch_devs = 0;
     touch_system.touch_available = 0;
 }
 
-// Enhanced input processing
-void process_all_input() {
-    if (touch_system.touch_available) {
-        // Process real touch events
-        int events = process_touch_events();
-        if (events > 0) {
-            printf("Processed %d touch events\n", events);
-        }
-    } else {
-        // Fallback to keyboard simulation
-        simulate_touch_with_keyboard();
-    }
-}
-
-// Fallback: Simulate touch with keyboard for testing
+// Keyboard fallback
 void simulate_touch_with_keyboard() {
     static int sim_x = 400;
     static int sim_y = 300;
     
-    // Set stdin to non-blocking
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
     
-    // Read keyboard input (non-blocking)
     int ch = getchar();
     if (ch != EOF) {
-        printf("=== KEYBOARD INPUT: %c (%d) ===\n", ch, ch);
+        printf("Key: %c\n", ch);
         
         touch_system.last_touch = touch_system.current_touch;
         
         switch (ch) {
-            case 'w': case 'W':
-                sim_y -= 50;
-                printf("Moving UP to %d,%d\n", sim_x, sim_y);
-                break;
-            case 's': case 'S':
-                sim_y += 50;
-                printf("Moving DOWN to %d,%d\n", sim_x, sim_y);
-                break;
-            case 'a': case 'A':
-                sim_x -= 50;
-                printf("Moving LEFT to %d,%d\n", sim_x, sim_y);
-                break;
-            case 'd': case 'D':
-                sim_x += 50;
-                printf("Moving RIGHT to %d,%d\n", sim_x, sim_y);
-                break;
-            case ' ':  // Spacebar = tap
+            case 'w': case 'W': sim_y -= 50; break;
+            case 's': case 'S': sim_y += 50; break;
+            case 'a': case 'A': sim_x -= 50; break;
+            case 'd': case 'D': sim_x += 50; break;
+            case ' ':
                 touch_system.current_touch.x = sim_x;
                 touch_system.current_touch.y = sim_y;
                 touch_system.current_touch.pressed = 1;
                 touch_system.current_touch.timestamp = get_time_ns();
-                printf("=== SIMULATED TAP at %d, %d ===\n", sim_x, sim_y);
-                // Restore blocking mode before returning
+                printf("Simulated TAP at %d, %d\n", sim_x, sim_y);
                 fcntl(STDIN_FILENO, F_SETFL, flags);
                 return;
-            case 't': case 'T':  // Test mode
-                printf("=== RUNNING TOUCH TEST ===\n");
-                test_touch_system();
-                break;
-            case 'c': case 'C':  // Center cursor
-                sim_x = touch_system.screen_width / 2;
-                sim_y = touch_system.screen_height / 2;
-                printf("Centered cursor at %d,%d\n", sim_x, sim_y);
-                break;
-            case 'q': case 'Q': // Quit
-                printf("=== QUIT REQUESTED ===\n");
+            case 'q': case 'Q':
                 running = 0;
                 fcntl(STDIN_FILENO, F_SETFL, flags);
                 return;
-            default:
-                printf("Unknown key. Controls: WASD=move, SPACE=tap, T=test, C=center, Q=quit\n");
-                break;
         }
         
-        // Clamp coordinates
         if (sim_x < 0) sim_x = 0;
         if (sim_x >= touch_system.screen_width) sim_x = touch_system.screen_width - 1;
         if (sim_y < 0) sim_y = 0;
         if (sim_y >= touch_system.screen_height) sim_y = touch_system.screen_height - 1;
         
-        // Update cursor position
         touch_system.current_touch.x = sim_x;
         touch_system.current_touch.y = sim_y;
-        touch_system.current_touch.pressed = 0; // Not pressed, just moving
+        touch_system.current_touch.pressed = 0;
         touch_system.current_touch.timestamp = get_time_ns();
-        
-        printf("Cursor position: %d, %d\n", sim_x, sim_y);
     }
     
-    // Restore blocking mode
     fcntl(STDIN_FILENO, F_SETFL, flags);
+}
+
+void process_all_input() {
+    if (touch_system.touch_available) {
+        process_touch_events();
+    } else {
+        simulate_touch_with_keyboard();
+    }
 }
 
 // UI System
@@ -671,14 +596,12 @@ void draw_calculator_screen() {
     int screen_width = fb.vinfo.xres;
     int screen_height = fb.vinfo.yres;
     
-    // Display
     draw_rounded_rect(fb.backbuffer, 40, 100, screen_width - 80, 120, 15, COLOR_SURFACE, screen_width, screen_height);
     
     int text_width = strlen(ui.calc_display) * 10;
     int text_x = screen_width - 60 - text_width;
     draw_text(fb.backbuffer, text_x, 140, ui.calc_display, COLOR_TEXT, screen_width, screen_height);
     
-    // Buttons
     const char* buttons[] = {
         "C", "+/-", "%", "/",
         "7", "8", "9", "*",
@@ -695,13 +618,11 @@ void draw_calculator_screen() {
         int col = i % 4;
         
         if (i == 16) {
-            col = 0;
-            row = 4;
+            col = 0; row = 4;
             draw_rounded_rect(fb.backbuffer, 40 + col * button_size, start_y + row * (button_size + 10), 
                             button_size * 2 - 5, button_size, 15, COLOR_BORDER, screen_width, screen_height);
         } else if (i >= 17) {
-            col = (i == 17) ? 2 : 3;
-            row = 4;
+            col = (i == 17) ? 2 : 3; row = 4;
             draw_rounded_rect(fb.backbuffer, 40 + col * button_size, start_y + row * (button_size + 10), 
                             button_size - 10, button_size, 15, COLOR_BORDER, screen_width, screen_height);
         } else {
@@ -714,7 +635,6 @@ void draw_calculator_screen() {
         draw_text(fb.backbuffer, text_x, text_y, buttons[i], COLOR_TEXT, screen_width, screen_height);
     }
     
-    // Back button
     draw_rounded_rect(fb.backbuffer, 40, 40, 100, 50, 10, COLOR_PRIMARY, screen_width, screen_height);
     draw_text(fb.backbuffer, 65, 55, "Back", COLOR_WHITE, screen_width, screen_height);
 }
@@ -740,7 +660,6 @@ void draw_clock_screen() {
     text_x = (screen_width - text_width) / 2;
     draw_text(fb.backbuffer, text_x, screen_height / 2 + 50, date_str, COLOR_TEXT_LIGHT, screen_width, screen_height);
     
-    // Back button
     draw_rounded_rect(fb.backbuffer, 40, 40, 100, 50, 10, COLOR_PRIMARY, screen_width, screen_height);
     draw_text(fb.backbuffer, 65, 55, "Back", COLOR_WHITE, screen_width, screen_height);
 }
@@ -752,12 +671,8 @@ void draw_settings_screen() {
     draw_text(fb.backbuffer, 40, 100, "Settings", COLOR_TEXT, screen_width, screen_height);
     
     const char* settings[] = {
-        "Display Brightness",
-        "Sound Volume", 
-        "Wi-Fi Networks",
-        "Bluetooth",
-        "Battery Saver",
-        "System Update"
+        "Display Brightness", "Sound Volume", "Wi-Fi Networks",
+        "Bluetooth", "Battery Saver", "System Update"
     };
     
     for (int i = 0; i < 6; i++) {
@@ -770,15 +685,12 @@ void draw_settings_screen() {
         draw_rounded_rect(fb.backbuffer, screen_width - 120, y + 15, 60, 30, 15, toggle_color, screen_width, screen_height);
     }
     
-    // Back button
     draw_rounded_rect(fb.backbuffer, 40, 40, 100, 50, 10, COLOR_PRIMARY, screen_width, screen_height);
     draw_text(fb.backbuffer, 65, 55, "Back", COLOR_WHITE, screen_width, screen_height);
 }
 
 // Touch input handling
 void handle_touch_input() {
-    if (!touch_system.touch_available) return;
-    
     SimpleGesture gesture = detect_simple_gesture();
     TouchPoint current = get_current_touch();
     
@@ -788,7 +700,7 @@ void handle_touch_input() {
     switch (ui.current_screen) {
         case SCREEN_HOME:
             if (gesture == GESTURE_TAP) {
-                printf("Tap detected at %d, %d\n", current.x, current.y);
+                printf("Tap at %d, %d\n", current.x, current.y);
                 
                 // Check app icons
                 int apps_per_row = 3;
@@ -827,7 +739,7 @@ void handle_touch_input() {
             break;
             
         default:
-            // Back button for all other screens
+            // Back button
             if (gesture == GESTURE_TAP &&
                 current.x >= 40 && current.x <= 140 &&
                 current.y >= 40 && current.y <= 90) {
@@ -862,11 +774,10 @@ void render_ui() {
             break;
     }
     
-    // Touch/cursor indicator
+    // Touch indicator
     TouchPoint current_touch = get_current_touch();
     
     if (touch_system.touch_available) {
-        // Real touch device - show when pressed
         if (touch_is_pressed()) {
             draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 30, COLOR_PRIMARY, screen_width, screen_height);
             draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 15, COLOR_WHITE, screen_width, screen_height);
@@ -875,45 +786,26 @@ void render_ui() {
             snprintf(coord_text, sizeof(coord_text), "TOUCH %d,%d", current_touch.x, current_touch.y);
             draw_text(fb.backbuffer, current_touch.x - 50, current_touch.y - 50, coord_text, COLOR_WHITE, screen_width, screen_height);
         }
-        
-        // Show touch device info
         draw_text(fb.backbuffer, 10, 10, "TOUCH: ACTIVE", COLOR_SUCCESS, screen_width, screen_height);
     } else {
-        // Keyboard fallback mode
+        // Keyboard mode
         if (current_touch.pressed) {
-            // Pressed state - filled circle with tap indicator
             draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 25, COLOR_PRIMARY, screen_width, screen_height);
             draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 15, COLOR_WHITE, screen_width, screen_height);
-            
-            // Show "TAP" text
-            draw_text(fb.backbuffer, current_touch.x - 20, current_touch.y - 40, "TAP", COLOR_WHITE, screen_width, screen_height);
         } else {
-            // Cursor state - outline only with crosshair
             for (int r = 20; r <= 25; r++) {
                 draw_circle(fb.backbuffer, current_touch.x, current_touch.y, r, COLOR_PRIMARY, screen_width, screen_height);
             }
             draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 5, COLOR_WHITE, screen_width, screen_height);
-            
-            // Draw crosshair
-            draw_rect(fb.backbuffer, current_touch.x - 10, current_touch.y - 1, 20, 2, COLOR_WHITE, screen_width, screen_height);
-            draw_rect(fb.backbuffer, current_touch.x - 1, current_touch.y - 10, 2, 20, COLOR_WHITE, screen_width, screen_height);
         }
         
-        // Status information
-        draw_text(fb.backbuffer, 10, 10, "TOUCH: KEYBOARD MODE", COLOR_WARNING, screen_width, screen_height);
+        draw_text(fb.backbuffer, 10, 10, "KEYBOARD MODE", COLOR_WARNING, screen_width, screen_height);
         
         char coord_text[64];
         snprintf(coord_text, sizeof(coord_text), "Cursor: %d,%d", current_touch.x, current_touch.y);
-        draw_text(fb.backbuffer, 10, screen_height - 70, coord_text, COLOR_TEXT_LIGHT, screen_width, screen_height);
+        draw_text(fb.backbuffer, 10, screen_height - 50, coord_text, COLOR_TEXT_LIGHT, screen_width, screen_height);
         
-        // Show controls
-        draw_text(fb.backbuffer, 10, screen_height - 50, "WASD=move SPACE=tap T=test C=center Q=quit", COLOR_TEXT_LIGHT, screen_width, screen_height);
-        
-        // Show current screen info
-        const char* screen_names[] = {"HOME", "CALC", "CLOCK", "SETTINGS", "WEATHER", "GALLERY", "MUSIC", "CONTACTS"};
-        char screen_text[64];
-        snprintf(screen_text, sizeof(screen_text), "Screen: %s", screen_names[ui.current_screen]);
-        draw_text(fb.backbuffer, 10, screen_height - 30, screen_text, COLOR_TEXT_LIGHT, screen_width, screen_height);
+        draw_text(fb.backbuffer, 10, screen_height - 30, "WASD=move SPACE=tap Q=quit", COLOR_TEXT_LIGHT, screen_width, screen_height);
     }
 }
 
@@ -935,8 +827,7 @@ int init_framebuffer() {
         return -1;
     }
 
-    printf("Current screen: %dx%d, %d bpp\n", 
-           fb.vinfo.xres, fb.vinfo.yres, fb.vinfo.bits_per_pixel);
+    printf("Screen: %dx%d, %d bpp\n", fb.vinfo.xres, fb.vinfo.yres, fb.vinfo.bits_per_pixel);
     
     int actual_width = fb.vinfo.xres;
     int actual_height = fb.vinfo.yres;
@@ -996,12 +887,7 @@ void swap_buffers() {
 
 // Main
 int main() {
-    printf("=== Orange Pi 5 Touch UI - Ultra Debug Mode ===\n");
-    printf("Timestamp: %ld\n", time(NULL));
-    printf("Process ID: %d\n", getpid());
-    printf("User ID: %d\n", getuid());
-    printf("Group ID: %d\n", getgid());
-    fflush(stdout);
+    printf("=== Orange Pi 5 Touch UI - Clean Implementation ===\n");
     
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -1016,76 +902,30 @@ int main() {
     int screen_w = fb.vinfo.xres;
     int screen_h = fb.vinfo.yres;
     
-    printf("Screen dimensions: %dx%d\n", screen_w, screen_h);
-    
-    // Try to initialize touch system
-    int touch_result = init_touch_system(screen_w, screen_h);
-    
-    if (touch_result < 0) {
-        printf("\n=== TOUCH INITIALIZATION FAILED ===\n");
-        printf("Reasons this might happen:\n");
-        printf("1. No touch hardware connected\n");
-        printf("2. Permission issues (try running as root)\n");
-        printf("3. Touch device not recognized\n");
-        printf("4. Driver issues\n");
-        printf("\nFalling back to keyboard control...\n");
-        printf("Controls: WASD=move, SPACE=tap, T=test, Q=quit\n");
+    if (init_touch_system(screen_w, screen_h) < 0) {
+        printf("Touch not available - using keyboard mode\n");
+        printf("Controls: WASD=move, SPACE=tap, Q=quit\n");
         
-        // Initialize fallback system
         touch_system.touch_available = 0;
         touch_system.screen_width = screen_w;
         touch_system.screen_height = screen_h;
         touch_system.current_touch.x = screen_w / 2;
         touch_system.current_touch.y = screen_h / 2;
         touch_system.current_touch.pressed = 0;
-    } else {
-        printf("\n=== TOUCH SYSTEM READY ===\n");
-        printf("Running touch test in 3 seconds...\n");
-        sleep(3);
-        test_touch_system();
     }
     
     init_ui();
     
-    printf("\n=== STARTING MAIN LOOP ===\n");
-    printf("Watch this output for touch events...\n");
-    
-    uint64_t frame_count = 0;
-    uint64_t last_status_time = get_time_ns();
+    printf("Starting UI loop...\n");
     
     while (running) {
         uint64_t frame_start = get_time_ns();
         
-        // Process input with enhanced debugging
         process_all_input();
-        
-        // Handle UI input 
         handle_touch_input();
-        
-        // Render UI
         render_ui();
-        
-        // Display
         swap_buffers();
         
-        frame_count++;
-        
-        // Print status every 5 seconds
-        if (frame_start - last_status_time > 5000000000ULL) {
-            printf("=== STATUS: Frame %lu, Touch available: %s ===\n", 
-                   frame_count, touch_system.touch_available ? "YES" : "NO");
-            
-            if (touch_system.touch_available) {
-                printf("Touch state: pos(%d,%d) pressed=%d\n",
-                       touch_system.current_touch.x,
-                       touch_system.current_touch.y,
-                       touch_system.current_touch.pressed);
-            }
-            
-            last_status_time = frame_start;
-        }
-        
-        // Frame rate limiting
         uint64_t frame_end = get_time_ns();
         uint64_t frame_duration = frame_end - frame_start;
         
