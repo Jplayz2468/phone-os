@@ -133,6 +133,12 @@ void read_touch() {
     }
 }
 
+uint64_t now_ns() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
 float get_cpu_usage_percent() {
     static unsigned long long last_total = 0, last_idle = 0;
     FILE *f = fopen("/proc/stat", "r");
@@ -156,12 +162,6 @@ float get_cpu_usage_percent() {
     last_total = total;
     last_idle = idle;
     return usage;
-}
-
-uint64_t now_ns() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
 void cleanup(int sig) {
@@ -199,21 +199,21 @@ int main() {
 
     init_touch();
 
-    uint64_t last_time = now_ns(), last_fps_time = last_time;
+    uint64_t last_fps_time = now_ns(), last_time = last_fps_time;
     int frame_count = 0, fps = 0;
+    float cpu_usage = 0;
 
     while (1) {
         uint64_t frame_start = now_ns();
         read_touch();
         clear(fbp, COLOR_BG);
 
-        float cpu_usage = get_cpu_usage_percent();
-        uint64_t now = now_ns();
-        float t = (now - last_time) / 1e9f;
         frame_count++;
-        if ((now - last_fps_time) > 1e9f) {
+        uint64_t now = now_ns();
+        if (now - last_fps_time > 1000000000ULL) {
             fps = frame_count;
             frame_count = 0;
+            cpu_usage = get_cpu_usage_percent();
             last_fps_time = now;
         }
 
@@ -221,17 +221,19 @@ int main() {
         snprintf(info, sizeof(info), "CPU: %.1f%%  FPS: %d", cpu_usage, fps);
         draw_text(fbp, &font, info, scale * 0.3f, 20, 20, 1.0f, COLOR_INFO);
 
-        float anim_scale = 1.0f + 0.1f * sinf(t * 2);
-        float final_scale = scale * anim_scale;
+        float t = (now - last_time) / 1e9f;
+        float anim_scale = 1.0f + 0.2f * sinf(t * 2.0f);
+        int y_offset = (int)(20 * sinf(t * 1.5f));
+        int x_offset = (int)(20 * cosf(t * 1.2f));
+
         const char *msg = "Welcome to Phone OS";
+        float final_scale = scale * anim_scale;
         int text_w = measure_text_width(&font, msg, final_scale);
-        int x = (screen_w - text_w) / 2;
-        int y = screen_h / 2 + (int)(40 * sinf(t));
+        int x = (screen_w - text_w) / 2 + x_offset;
+        int y = screen_h / 2 + y_offset;
         draw_text(fbp, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
 
-        uint64_t frame_end = now_ns();
-        int sleep_time_us = 16666 - (int)((frame_end - frame_start) / 1000);
-        if (sleep_time_us > 0) usleep(sleep_time_us);
+        usleep(16666); // ~60 FPS
     }
 
     return 0;
