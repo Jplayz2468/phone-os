@@ -37,10 +37,11 @@
       left: 0 !important;
       margin: 0 !important;
       padding: 0 !important;
-      transform: translateZ(0);
-      -webkit-transform: translateZ(0);
+      transform: translate3d(0, 0, 0);
+      -webkit-transform: translate3d(0, 0, 0);
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
+      will-change: transform;
     }
     
     .phone-container {
@@ -53,8 +54,9 @@
       overflow: hidden;
       margin: 0 !important;
       padding: 0 !important;
-      transform: translateZ(0);
-      -webkit-transform: translateZ(0);
+      transform: translate3d(0, 0, 0);
+      -webkit-transform: translate3d(0, 0, 0);
+      will-change: transform;
     }
     
     /* Status Bar */
@@ -73,6 +75,7 @@
       font-size: 28px;
       font-weight: bold;
       margin: 0 !important;
+      transform: translate3d(0, 0, 0);
       will-change: transform;
     }
     
@@ -88,6 +91,22 @@
       gap: 15px;
     }
     
+    /* FPS Counter */
+    .fps-counter {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 20px;
+      font-weight: bold;
+      z-index: 2000;
+      font-family: monospace;
+      color: #00ff00;
+      border: 1px solid rgba(0, 255, 0, 0.3);
+    }
+    
     /* Home Screen */
     .home-screen {
       position: absolute;
@@ -95,9 +114,11 @@
       left: 0 !important;
       width: 1080px !important;
       height: 1820px !important;
+      transform: translate3d(0, 0, 0);
+      -webkit-transform: translate3d(0, 0, 0);
       will-change: transform;
-      transform: translateZ(0);
-      -webkit-transform: translateZ(0);
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
     }
     
     .clock-widget {
@@ -156,9 +177,11 @@
       justify-content: center;
       cursor: none !important;
       border: 2px solid rgba(255, 255, 255, 0.3);
-      will-change: background-color;
-      transform: translateZ(0);
-      -webkit-transform: translateZ(0);
+      transform: translate3d(0, 0, 0) scale(1);
+      -webkit-transform: translate3d(0, 0, 0) scale(1);
+      will-change: transform, background-color;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
     }
     
     .app-icon:active {
@@ -193,13 +216,17 @@
       width: 1080px !important;
       height: 1820px !important;
       background: rgba(0, 0, 0, 0.95);
-      transform: translateX(1080px);
+      transform: translate3d(1080px, 0, 0);
+      -webkit-transform: translate3d(1080px, 0, 0);
       z-index: 500;
       will-change: transform;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
     }
     
     .app-screen.active {
-      transform: translateX(0);
+      transform: translate3d(0, 0, 0);
+      -webkit-transform: translate3d(0, 0, 0);
     }
     
     .app-header {
@@ -222,7 +249,8 @@
       font-size: 40px;
       font-weight: bold;
       margin-right: 30px;
-      will-change: background-color;
+      transform: translate3d(0, 0, 0);
+      will-change: transform, background-color;
     }
     
     .back-button:active {
@@ -279,9 +307,9 @@
       font-weight: bold;
       cursor: none !important;
       border: 2px solid rgba(255, 255, 255, 0.3);
-      will-change: background-color;
-      transform: translateZ(0);
-      -webkit-transform: translateZ(0);
+      transform: translate3d(0, 0, 0);
+      will-change: transform, background-color;
+      backface-visibility: hidden;
     }
     
     .calc-btn:active {
@@ -347,13 +375,14 @@
       border-radius: 10px;
       padding: 30px;
       z-index: 2000;
-      transform: translateY(-200px);
+      transform: translate3d(0, -200px, 0);
       border: 2px solid rgba(255, 255, 255, 0.3);
       will-change: transform;
+      backface-visibility: hidden;
     }
     
     .notification.show {
-      transform: translateY(0);
+      transform: translate3d(0, 0, 0);
     }
     
     .notification-title {
@@ -379,18 +408,15 @@
     input:active, button:active, div:active, span:active, *:active {
       cursor: none !important;
     }
-    
-    /* Disable transitions to prevent tearing */
-    * {
-      transition: none !important;
-      -webkit-transition: none !important;
-      -moz-transition: none !important;
-      -o-transition: none !important;
-    }
   </style>
 </head>
 <body>
   <div class="phone-container">
+    <!-- FPS Counter -->
+    <div class="fps-counter" id="fpsCounter">
+      FPS: -- | 1%: --
+    </div>
+    
     <!-- Status Bar -->
     <div class="status-bar">
       <div class="status-left">
@@ -499,10 +525,89 @@
     let currentExpression = '';
     let currentApp = 'home';
     let apps = {};
-
+    
+    // FPS tracking
+    let frameTimes = [];
+    let lastFrameTime = performance.now();
+    let fpsUpdateTime = 0;
+    const FPS_SAMPLE_SIZE = 120; // 2 seconds at 60fps
+    
+    // Animation system
+    let isAnimating = false;
+    
     // Force hide cursor completely
     document.body.style.cursor = 'none';
     document.documentElement.style.cursor = 'none';
+
+    // FPS Counter
+    function updateFPS() {
+      const now = performance.now();
+      const deltaTime = now - lastFrameTime;
+      lastFrameTime = now;
+      
+      // Store frame time (convert to FPS equivalent)
+      frameTimes.push(deltaTime);
+      
+      // Keep only recent samples
+      if (frameTimes.length > FPS_SAMPLE_SIZE) {
+        frameTimes.shift();
+      }
+      
+      // Update display every 500ms
+      if (now - fpsUpdateTime >= 500) {
+        const avgFrameTime = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+        const avgFPS = Math.round(1000 / avgFrameTime);
+        
+        // Calculate 1% low (worst 1% of frame times)
+        const sortedTimes = [...frameTimes].sort((a, b) => b - a); // Sort worst to best
+        const onePercentCount = Math.max(1, Math.floor(sortedTimes.length * 0.01));
+        const onePercentLowTimes = sortedTimes.slice(0, onePercentCount);
+        const onePercentLowAvg = onePercentLowTimes.reduce((a, b) => a + b, 0) / onePercentLowTimes.length;
+        const onePercentLowFPS = Math.round(1000 / onePercentLowAvg);
+        
+        document.getElementById('fpsCounter').textContent = `FPS: ${avgFPS} | 1%: ${onePercentLowFPS}`;
+        fpsUpdateTime = now;
+      }
+      
+      requestAnimationFrame(updateFPS);
+    }
+    
+    // Start FPS monitoring
+    requestAnimationFrame(updateFPS);
+
+    // Smooth animation system
+    function animateElement(element, fromTransform, toTransform, duration = 250, callback) {
+      if (isAnimating) return;
+      isAnimating = true;
+      
+      const startTime = performance.now();
+      
+      function animate(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        // Use easeOutCubic for smooth animation
+        const eased = 1 - Math.pow(1 - progress, 3);
+        
+        // Interpolate between transforms
+        if (fromTransform.includes('translateX') && toTransform.includes('translateX')) {
+          const fromX = parseFloat(fromTransform.match(/-?\d+/)[0]);
+          const toX = parseFloat(toTransform.match(/-?\d+/)[0]);
+          const currentX = fromX + (toX - fromX) * eased;
+          element.style.transform = `translate3d(${currentX}px, 0, 0)`;
+        }
+        
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          element.style.transform = toTransform;
+          isAnimating = false;
+          if (callback) callback();
+        }
+      }
+      
+      requestAnimationFrame(animate);
+    }
 
     // WebSocket connection
     function connectWebSocket() {
@@ -587,14 +692,20 @@
     }
 
     function openApp(appId) {
+      if (isAnimating) return;
+      
+      // Close any currently open app first
       document.querySelectorAll('.app-screen').forEach(screen => {
         screen.classList.remove('active');
+        screen.style.transform = 'translate3d(1080px, 0, 0)';
       });
       
       currentApp = appId;
-      document.getElementById('homeScreen').style.transform = 'translateX(-1080px)';
+      const homeScreen = document.getElementById('homeScreen');
       
-      setTimeout(() => {
+      // Animate home screen out
+      animateElement(homeScreen, 'translate3d(0, 0, 0)', 'translate3d(-1080px, 0, 0)', 250, () => {
+        // Show the app screen after home screen is out
         let appScreen;
         if (appId === 'calculator') {
           appScreen = document.getElementById('calculatorApp');
@@ -605,8 +716,11 @@
           document.getElementById('genericAppTitle').textContent = apps[appId]?.name || 'App';
         }
         
-        appScreen.classList.add('active');
-      }, 50);
+        // Animate app screen in
+        animateElement(appScreen, 'translate3d(1080px, 0, 0)', 'translate3d(0, 0, 0)', 250, () => {
+          appScreen.classList.add('active');
+        });
+      });
       
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
@@ -617,13 +731,20 @@
     }
 
     function goHome() {
-      document.querySelectorAll('.app-screen').forEach(screen => {
-        screen.classList.remove('active');
-      });
+      if (isAnimating) return;
       
-      setTimeout(() => {
-        document.getElementById('homeScreen').style.transform = 'translateX(0)';
-      }, 50);
+      const activeScreen = document.querySelector('.app-screen.active');
+      if (!activeScreen) return;
+      
+      const homeScreen = document.getElementById('homeScreen');
+      
+      // Animate app screen out
+      animateElement(activeScreen, 'translate3d(0, 0, 0)', 'translate3d(1080px, 0, 0)', 250, () => {
+        activeScreen.classList.remove('active');
+        
+        // Animate home screen in
+        animateElement(homeScreen, 'translate3d(-1080px, 0, 0)', 'translate3d(0, 0, 0)', 250);
+      });
       
       currentApp = 'home';
       
@@ -665,11 +786,17 @@
       document.getElementById('notificationTitle').textContent = title;
       document.getElementById('notificationMessage').textContent = message;
       
-      notification.classList.add('show');
-      
-      setTimeout(() => {
-        notification.classList.remove('show');
-      }, 3000);
+      // Animate notification in
+      animateElement(notification, 'translate3d(0, -200px, 0)', 'translate3d(0, 0, 0)', 200, () => {
+        notification.classList.add('show');
+        
+        setTimeout(() => {
+          // Animate notification out
+          animateElement(notification, 'translate3d(0, 0, 0)', 'translate3d(0, -200px, 0)', 200, () => {
+            notification.classList.remove('show');
+          });
+        }, 3000);
+      });
     }
 
     // Settings sliders
@@ -688,6 +815,21 @@
           type: 'settings_change',
           volume: parseInt(e.target.value)
         }));
+      }
+    });
+
+    // Touch feedback for app icons
+    document.addEventListener('touchstart', (e) => {
+      if (e.target.closest('.app-icon')) {
+        const icon = e.target.closest('.app-icon');
+        icon.style.transform = 'translate3d(0, 0, 0) scale(0.95)';
+      }
+    });
+
+    document.addEventListener('touchend', (e) => {
+      if (e.target.closest('.app-icon')) {
+        const icon = e.target.closest('.app-icon');
+        icon.style.transform = 'translate3d(0, 0, 0) scale(1)';
       }
     });
 
