@@ -102,8 +102,8 @@
     
     .clock-widget {
       text-align: center;
-      margin-top: 100px;
-      margin-bottom: 60px;
+      margin-top: 80px;
+      margin-bottom: 40px;
     }
     
     .time {
@@ -119,12 +119,30 @@
     
     /* App Grid */
     .app-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 40px;
-      padding: 40px 60px;
-      max-height: 900px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 30px;
+      padding: 20px 40px;
+      max-height: 1100px;
       overflow-y: auto;
+    }
+    
+    .app-row {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      width: 100%;
+    }
+    
+    .app-row.row-4 {
+      justify-content: space-evenly;
+      max-width: 920px;
+    }
+    
+    .app-row.row-3 {
+      justify-content: center;
+      max-width: 680px;
     }
     
     .app-icon {
@@ -392,7 +410,7 @@
       </div>
       
       <div class="app-grid" id="appGrid">
-        <!-- Apps will be populated by JavaScript -->
+        <!-- Apps will be populated by JavaScript in rows -->
       </div>
     </div>
 
@@ -535,21 +553,37 @@
       const appGrid = document.getElementById('appGrid');
       appGrid.innerHTML = '';
       
-      Object.keys(appData).forEach((appId) => {
-        if (appId === 'home') return;
+      const appList = Object.keys(appData).filter(appId => appId !== 'home');
+      
+      // Create rows of apps
+      for (let i = 0; i < appList.length; i += 4) {
+        const row = document.createElement('div');
+        const remainingApps = appList.length - i;
         
-        const app = appData[appId];
-        const appIcon = document.createElement('div');
-        appIcon.className = 'app-icon';
-        appIcon.onclick = () => openApp(appId);
+        if (remainingApps >= 4) {
+          row.className = 'app-row row-4';
+        } else {
+          row.className = 'app-row row-3';
+        }
         
-        appIcon.innerHTML = `
-          <div class="app-emoji">${app.icon}</div>
-          <div class="app-name">${app.name}</div>
-        `;
+        // Add apps to this row
+        const rowApps = appList.slice(i, i + 4);
+        rowApps.forEach(appId => {
+          const app = appData[appId];
+          const appIcon = document.createElement('div');
+          appIcon.className = 'app-icon';
+          appIcon.onclick = () => openApp(appId);
+          
+          appIcon.innerHTML = `
+            <div class="app-emoji">${app.icon}</div>
+            <div class="app-name">${app.name}</div>
+          `;
+          
+          row.appendChild(appIcon);
+        });
         
-        appGrid.appendChild(appIcon);
-      });
+        appGrid.appendChild(row);
+      }
     }
 
     function openApp(appId) {
