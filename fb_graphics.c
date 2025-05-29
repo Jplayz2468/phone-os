@@ -64,30 +64,6 @@ typedef struct {
     uint64_t timestamp;
 } TouchPoint;
 
-typedef struct {
-    int fd;
-    TouchPoint points[MAX_TOUCH_EVENTS];
-    int active_touches;
-    volatile int running;
-} TouchInput;
-
-typedef enum {
-    GESTURE_NONE,
-    GESTURE_TAP,
-    GESTURE_LONG_PRESS,
-    GESTURE_SWIPE_UP,
-    GESTURE_SWIPE_DOWN,
-    GESTURE_SWIPE_LEFT,
-    GESTURE_SWIPE_RIGHT
-} GestureType;
-
-typedef struct {
-    GestureType type;
-    int x, y;          // Start position
-    int dx, dy;        // Delta for swipes
-    uint64_t duration; // For long press
-} Gesture;
-
 typedef enum {
     SCREEN_HOME,
     SCREEN_CALCULATOR,
@@ -125,16 +101,67 @@ typedef struct {
     int scroll_offset;
     float animation_progress;
     int selected_app;
-    
-    // Touch state
-    TouchPoint last_touch;
-    Gesture current_gesture;
-    uint64_t gesture_start_time;
 } PhoneUI;
+
+// UI System initialization
+void init_ui() {
+    ui.current_screen = SCREEN_HOME;
+    ui.previous_screen = SCREEN_HOME;
+    ui.num_apps = 8;
+    ui.selected_app = -1;
+    ui.scroll_offset = 0;
+    ui.animation_progress = 0;
+    
+    // Initialize apps
+    strcpy(ui.apps[0].name, "Calculator");
+    strcpy(ui.apps[0].icon, "🔢");
+    ui.apps[0].color = COLOR_PRIMARY;
+    ui.apps[0].screen = SCREEN_CALCULATOR;
+    
+    strcpy(ui.apps[1].name, "Clock");
+    strcpy(ui.apps[1].icon, "🕐");
+    ui.apps[1].color = COLOR_SUCCESS;
+    ui.apps[1].screen = SCREEN_CLOCK;
+    
+    strcpy(ui.apps[2].name, "Settings");
+    strcpy(ui.apps[2].icon, "⚙️");
+    ui.apps[2].color = COLOR_TEXT_LIGHT;
+    ui.apps[2].screen = SCREEN_SETTINGS;
+    
+    strcpy(ui.apps[3].name, "Weather");
+    strcpy(ui.apps[3].icon, "🌤️");
+    ui.apps[3].color = COLOR_SECONDARY;
+    ui.apps[3].screen = SCREEN_WEATHER;
+    
+    strcpy(ui.apps[4].name, "Gallery");
+    strcpy(ui.apps[4].icon, "📷");
+    ui.apps[4].color = COLOR_WARNING;
+    ui.apps[4].screen = SCREEN_GALLERY;
+    
+    strcpy(ui.apps[5].name, "Music");
+    strcpy(ui.apps[5].icon, "🎵");
+    ui.apps[5].color = COLOR_ERROR;
+    ui.apps[5].screen = SCREEN_MUSIC;
+    
+    strcpy(ui.apps[6].name, "Contacts");
+    strcpy(ui.apps[6].icon, "👥");
+    ui.apps[6].color = COLOR_PRIMARY;
+    ui.apps[6].screen = SCREEN_CONTACTS;
+    
+    strcpy(ui.apps[7].name, "Back");
+    strcpy(ui.apps[7].icon, "←");
+    ui.apps[7].color = COLOR_BORDER;
+    ui.apps[7].screen = SCREEN_HOME;
+    
+    // Initialize calculator
+    strcpy(ui.calc_display, "0");
+    ui.calc_value = 0;
+    ui.calc_operation = 0;
+    ui.calc_new_number = 1;
+}
 
 static volatile int running = 1;
 static FrameBuffer fb;
-static TouchInput touch;
 static PhoneUI ui;
 static struct termios orig_termios;
 static int console_fd = -1;
@@ -146,7 +173,6 @@ static FILE *orig_stderr = NULL;
 void signal_handler(int sig) {
     (void)sig; // Suppress unused parameter warning
     running = 0;
-    touch.running = 0;
 }
 
 // Get high resolution timestamp
@@ -353,166 +379,288 @@ void draw_text(uint32_t *buffer, int x, int y, const char *text, uint32_t color,
     }
 }
 
-// Touch input handling - synchronous version
-void process_touch_input() {
-    if (touch.fd < 0) return;
+// Touch input system - Educational implementation
+typedef struct {
+    int fd;                    // File descriptor for touch device
+    int min_x, max_x;         // Touch device coordinate ranges
+    int min_y, max_y;
+    int screen_width, screen_height;  // Screen resolution for mapping
+    TouchPoint current_touch;  // Current touch state
+    TouchPoint last_touch;     // Previous touch state
+    int touch_available;       // Whether touch device was found
+} TouchSystem;
+
+static TouchSystem touch_system;
+
+// Find and initialize touch device
+int init_touch_system(int screen_w, int screen_h) {
+    touch_system.fd = -1;
+    touch_system.touch_available = 0;
+    touch_system.screen_width = screen_w;
+    touch_system.screen_height = screen_h;
+    
+    // List of common touch device paths
+    const char* touch_paths[] = {
+        "/dev/input/event0", "/dev/input/event1", "/dev/input/event2",
+        "/dev/input/event3", "/dev/input/event4", "/dev/input/event5",
+        "/dev/input/event6", "/dev/input/event7"
+    };
+    
+    printf("Searching for touch devices...\n");
+    
+    for (int i = 0; i < 8; i++) {
+        int fd = open(touch_paths[i], O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        
+        // Check if this device has touch capabilities
+        unsigned long evbit = 0;
+        if (ioctl(fd, EVIOCGBIT(0, EV_MAX), &evbit) >= 0) {
+            // Check for absolute positioning (touch/tablet devices)
+            if (evbit & (1 << EV_ABS)) {
+                printf("Found touch device: %s\n", touch_paths[i]);
+                
+                // Get device capabilities
+                struct input_absinfo abs_x, abs_y;
+                
+                if (ioctl(fd, EVIOCGABS(ABS_X), &abs_x) >= 0) {
+                    touch_system.min_x = abs_x.minimum;
+                    touch_system.max_x = abs_x.maximum;
+                    printf("  X range: %d to %d\n", touch_system.min_x, touch_system.max_x);
+                }
+                
+                if (ioctl(fd, EVIOCGABS(ABS_Y), &abs_y) >= 0) {
+                    touch_system.min_y = abs_y.minimum;
+                    touch_system.max_y = abs_y.maximum;
+                    printf("  Y range: %d to %d\n", touch_system.min_y, touch_system.max_y);
+                }
+                
+                touch_system.fd = fd;
+                touch_system.touch_available = 1;
+                
+                // Initialize touch state
+                touch_system.current_touch.x = 0;
+                touch_system.current_touch.y = 0;
+                touch_system.current_touch.pressed = 0;
+                touch_system.last_touch = touch_system.current_touch;
+                
+                return 0;
+            }
+        }
+        close(fd);
+    }
+    
+    printf("No touch device found\n");
+    return -1;
+}
+
+// Map touch coordinates to screen coordinates
+void map_touch_to_screen(int touch_x, int touch_y, int *screen_x, int *screen_y) {
+    // Map touch device coordinates to screen coordinates
+    if (touch_system.max_x > touch_system.min_x) {
+        *screen_x = (touch_x - touch_system.min_x) * touch_system.screen_width / 
+                    (touch_system.max_x - touch_system.min_x);
+    } else {
+        *screen_x = touch_x;
+    }
+    
+    if (touch_system.max_y > touch_system.min_y) {
+        *screen_y = (touch_y - touch_system.min_y) * touch_system.screen_height / 
+                    (touch_system.max_y - touch_system.min_y);
+    } else {
+        *screen_y = touch_y;
+    }
+    
+    // Clamp to screen bounds
+    if (*screen_x < 0) *screen_x = 0;
+    if (*screen_x >= touch_system.screen_width) *screen_x = touch_system.screen_width - 1;
+    if (*screen_y < 0) *screen_y = 0;
+    if (*screen_y >= touch_system.screen_height) *screen_y = touch_system.screen_height - 1;
+}
+
+// Process touch input events
+int process_touch_events() {
+    if (!touch_system.touch_available) return 0;
     
     struct input_event ev;
-    static int current_x = 0, current_y = 0;
-    static int touch_active = 0;
+    int events_processed = 0;
+    static int raw_x = 0, raw_y = 0;
+    static int touch_down = 0;
     
-    // Read all available events (non-blocking)
-    while (read(touch.fd, &ev, sizeof(ev)) == sizeof(ev)) {
+    // Read all available events
+    while (read(touch_system.fd, &ev, sizeof(ev)) == sizeof(ev)) {
+        events_processed++;
+        
         switch (ev.type) {
             case EV_ABS:
+                // Absolute positioning events (main touch coordinates)
                 if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
-                    current_x = ev.value;
+                    raw_x = ev.value;
+                    printf("Touch X: %d\n", raw_x);
                 } else if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
-                    current_y = ev.value;
+                    raw_y = ev.value;
+                    printf("Touch Y: %d\n", raw_y);
                 }
                 break;
                 
             case EV_KEY:
+                // Touch press/release events
                 if (ev.code == BTN_TOUCH || ev.code == BTN_LEFT) {
-                    touch_active = ev.value;
-                    if (touch.active_touches < MAX_TOUCH_EVENTS) {
-                        TouchPoint *point = &touch.points[0];
-                        point->x = current_x;
-                        point->y = current_y;
-                        point->pressed = touch_active;
-                        point->timestamp = get_time_ns();
-                        point->touch_id = 0;
-                        
-                        if (touch_active) {
-                            touch.active_touches = 1;
-                        } else {
-                            touch.active_touches = 0;
-                        }
-                    }
+                    touch_down = ev.value;
+                    printf("Touch %s\n", touch_down ? "DOWN" : "UP");
+                    
+                    // Update touch state
+                    touch_system.last_touch = touch_system.current_touch;
+                    
+                    // Map coordinates to screen space
+                    map_touch_to_screen(raw_x, raw_y, 
+                                      &touch_system.current_touch.x, 
+                                      &touch_system.current_touch.y);
+                    
+                    touch_system.current_touch.pressed = touch_down;
+                    touch_system.current_touch.timestamp = get_time_ns();
+                    
+                    printf("Screen coords: %d, %d\n", 
+                           touch_system.current_touch.x, 
+                           touch_system.current_touch.y);
                 }
+                break;
+                
+            case EV_SYN:
+                // Synchronization event - marks end of touch event group
+                // This is when we know we have a complete touch update
                 break;
         }
     }
+    
+    return events_processed;
 }
 
-int init_touch() {
-    // Try to find touch device
-    const char* touch_devices[] = {
-        "/dev/input/event0", "/dev/input/event1", "/dev/input/event2",
-        "/dev/input/event3", "/dev/input/event4", "/dev/input/event5"
-    };
-    
-    touch.fd = -1;
-    for (int i = 0; i < 6; i++) {
-        touch.fd = open(touch_devices[i], O_RDONLY | O_NONBLOCK);
-        if (touch.fd >= 0) {
-            printf("Touch device found: %s\n", touch_devices[i]);
-            break;
-        }
-    }
-    
-    if (touch.fd < 0) {
-        printf("No touch device found\n");
-        return -1;
-    }
-    
-    touch.running = 1;
-    touch.active_touches = 0;
-    
-    return 0;
+// Get current touch state
+TouchPoint get_current_touch() {
+    return touch_system.current_touch;
 }
 
-void cleanup_touch() {
-    if (touch.fd >= 0) {
-        close(touch.fd);
-        touch.fd = -1;
-    }
+// Check if touch just happened (transition from not pressed to pressed)
+int touch_just_pressed() {
+    return touch_system.current_touch.pressed && !touch_system.last_touch.pressed;
 }
 
-// Gesture recognition
-Gesture detect_gesture(TouchPoint *start, TouchPoint *end, uint64_t duration) {
-    Gesture gesture = {0};
+// Check if touch just released (transition from pressed to not pressed)  
+int touch_just_released() {
+    return !touch_system.current_touch.pressed && touch_system.last_touch.pressed;
+}
+
+// Check if touch is currently down
+int touch_is_pressed() {
+    return touch_system.current_touch.pressed;
+}
+
+// Simple gesture detection
+typedef enum {
+    GESTURE_NONE,
+    GESTURE_TAP,
+    GESTURE_SWIPE_UP,
+    GESTURE_SWIPE_DOWN, 
+    GESTURE_SWIPE_LEFT,
+    GESTURE_SWIPE_RIGHT
+} SimpleGesture;
+
+SimpleGesture detect_simple_gesture() {
+    if (!touch_just_released()) return GESTURE_NONE;
     
-    int dx = end->x - start->x;
-    int dy = end->y - start->y;
+    int dx = touch_system.current_touch.x - touch_system.last_touch.x;
+    int dy = touch_system.current_touch.y - touch_system.last_touch.y;
     int distance = sqrt(dx*dx + dy*dy);
     
-    if (duration > 800000000) { // 800ms
-        gesture.type = GESTURE_LONG_PRESS;
-    } else if (distance < 50) {
-        gesture.type = GESTURE_TAP;
-    } else {
+    uint64_t duration = touch_system.current_touch.timestamp - touch_system.last_touch.timestamp;
+    
+    // If touch was very short and didn't move much, it's a tap
+    if (distance < 50 && duration < 500000000) { // 500ms
+        return GESTURE_TAP;
+    }
+    
+    // If moved significantly, determine swipe direction
+    if (distance > 100) {
         if (abs(dx) > abs(dy)) {
-            gesture.type = (dx > 0) ? GESTURE_SWIPE_RIGHT : GESTURE_SWIPE_LEFT;
+            return (dx > 0) ? GESTURE_SWIPE_RIGHT : GESTURE_SWIPE_LEFT;
         } else {
-            gesture.type = (dy > 0) ? GESTURE_SWIPE_DOWN : GESTURE_SWIPE_UP;
+            return (dy > 0) ? GESTURE_SWIPE_DOWN : GESTURE_SWIPE_UP;
         }
     }
     
-    gesture.x = start->x;
-    gesture.y = start->y;
-    gesture.dx = dx;
-    gesture.dy = dy;
-    gesture.duration = duration;
-    
-    return gesture;
+    return GESTURE_NONE;
 }
 
-// UI System
-void init_ui() {
-    ui.current_screen = SCREEN_HOME;
-    ui.previous_screen = SCREEN_HOME;
-    ui.num_apps = 8;
-    ui.selected_app = -1;
-    ui.scroll_offset = 0;
-    ui.animation_progress = 0;
+void cleanup_touch_system() {
+    if (touch_system.fd >= 0) {
+        close(touch_system.fd);
+        touch_system.fd = -1;
+    }
+    touch_system.touch_available = 0;
+}
+
+// Updated input handling using new touch system
+void handle_touch_input() {
+    if (!touch_system.touch_available) return;
     
-    // Initialize apps
-    strcpy(ui.apps[0].name, "Calculator");
-    strcpy(ui.apps[0].icon, "🔢");
-    ui.apps[0].color = COLOR_PRIMARY;
-    ui.apps[0].screen = SCREEN_CALCULATOR;
+    SimpleGesture gesture = detect_simple_gesture();
+    TouchPoint current = get_current_touch();
     
-    strcpy(ui.apps[1].name, "Clock");
-    strcpy(ui.apps[1].icon, "🕐");
-    ui.apps[1].color = COLOR_SUCCESS;
-    ui.apps[1].screen = SCREEN_CLOCK;
+    int screen_width = fb.vinfo.xres;
+    int screen_height = fb.vinfo.yres;
     
-    strcpy(ui.apps[2].name, "Settings");
-    strcpy(ui.apps[2].icon, "⚙️");
-    ui.apps[2].color = COLOR_TEXT_LIGHT;
-    ui.apps[2].screen = SCREEN_SETTINGS;
-    
-    strcpy(ui.apps[3].name, "Weather");
-    strcpy(ui.apps[3].icon, "🌤️");
-    ui.apps[3].color = COLOR_SECONDARY;
-    ui.apps[3].screen = SCREEN_WEATHER;
-    
-    strcpy(ui.apps[4].name, "Gallery");
-    strcpy(ui.apps[4].icon, "📷");
-    ui.apps[4].color = COLOR_WARNING;
-    ui.apps[4].screen = SCREEN_GALLERY;
-    
-    strcpy(ui.apps[5].name, "Music");
-    strcpy(ui.apps[5].icon, "🎵");
-    ui.apps[5].color = COLOR_ERROR;
-    ui.apps[5].screen = SCREEN_MUSIC;
-    
-    strcpy(ui.apps[6].name, "Contacts");
-    strcpy(ui.apps[6].icon, "👥");
-    ui.apps[6].color = COLOR_PRIMARY;
-    ui.apps[6].screen = SCREEN_CONTACTS;
-    
-    strcpy(ui.apps[7].name, "Back");
-    strcpy(ui.apps[7].icon, "←");
-    ui.apps[7].color = COLOR_BORDER;
-    ui.apps[7].screen = SCREEN_HOME;
-    
-    // Initialize calculator
-    strcpy(ui.calc_display, "0");
-    ui.calc_value = 0;
-    ui.calc_operation = 0;
-    ui.calc_new_number = 1;
+    // Handle gestures based on current screen
+    switch (ui.current_screen) {
+        case SCREEN_HOME:
+            if (gesture == GESTURE_TAP) {
+                printf("Tap detected at %d, %d\n", current.x, current.y);
+                
+                // Check app icons (3x2 grid)
+                int apps_per_row = 3;
+                int icon_size = 120;
+                int icon_margin = 40;
+                int start_y = 150;
+                
+                for (int i = 0; i < 6; i++) {
+                    int row = i / apps_per_row;
+                    int col = i % apps_per_row;
+                    
+                    int x = col * (icon_size + icon_margin) + icon_margin + 
+                           (screen_width - (apps_per_row * (icon_size + icon_margin) - icon_margin)) / 2;
+                    int y = start_y + row * (icon_size + 100);
+                    
+                    if (current.x >= x && current.x <= x + icon_size &&
+                        current.y >= y && current.y <= y + icon_size) {
+                        printf("Opening app: %s\n", ui.apps[i].name);
+                        ui.current_screen = ui.apps[i].screen;
+                        break;
+                    }
+                }
+                
+                // Check dock apps
+                int dock_y = screen_height - 200;
+                for (int i = 6; i < ui.num_apps; i++) {
+                    int x = 80 + (i - 6) * 150;
+                    if (current.x >= x && current.x <= x + 80 &&
+                        current.y >= dock_y + 20 && current.y <= dock_y + 100) {
+                        printf("Opening dock app: %s\n", ui.apps[i].name);
+                        ui.current_screen = ui.apps[i].screen;
+                        break;
+                    }
+                }
+            }
+            break;
+            
+        default:
+            // Back button for all other screens
+            if (gesture == GESTURE_TAP &&
+                current.x >= 40 && current.x <= 140 &&
+                current.y >= 40 && current.y <= 90) {
+                printf("Back button pressed\n");
+                ui.current_screen = SCREEN_HOME;
+            }
+            break;
+    }
 }
 
 void draw_home_screen() {
@@ -747,73 +895,65 @@ void draw_settings_screen() {
 }
 
 void handle_touch_input() {
-    if (touch.active_touches == 0) return;
+    if (!touch_system.touch_available) return;
     
-    TouchPoint *point = &touch.points[0];
+    SimpleGesture gesture = detect_simple_gesture();
+    TouchPoint current = get_current_touch();
+    
     int screen_width = fb.vinfo.xres;
     int screen_height = fb.vinfo.yres;
     
-    // Scale touch coordinates if needed (adjust based on your touch device)
-    int touch_x = point->x;
-    int touch_y = point->y;
-    
-    // Simple tap detection for now
-    if (point->pressed) {
-        ui.last_touch = *point;
-        ui.gesture_start_time = point->timestamp;
-    } else if (ui.last_touch.pressed) {
-        // Touch released - detect gesture
-        uint64_t duration = point->timestamp - ui.gesture_start_time;
-        ui.current_gesture = detect_gesture(&ui.last_touch, point, duration);
-        
-        // Handle gestures based on current screen
-        switch (ui.current_screen) {
-            case SCREEN_HOME:
-                if (ui.current_gesture.type == GESTURE_TAP) {
-                    // Check app icons
-                    int apps_per_row = 3;
-                    int icon_size = 120;
-                    int icon_margin = 40;
-                    int start_y = 150;
-                    
-                    for (int i = 0; i < 6; i++) {
-                        int row = i / apps_per_row;
-                        int col = i % apps_per_row;
-                        
-                        int x = col * (icon_size + icon_margin) + icon_margin + (screen_width - (apps_per_row * (icon_size + icon_margin) - icon_margin)) / 2;
-                        int y = start_y + row * (icon_size + 100);
-                        
-                        if (touch_x >= x && touch_x <= x + icon_size &&
-                            touch_y >= y && touch_y <= y + icon_size) {
-                            ui.current_screen = ui.apps[i].screen;
-                            break;
-                        }
-                    }
-                    
-                    // Check dock apps
-                    int dock_y = screen_height - 200;
-                    for (int i = 6; i < ui.num_apps; i++) {
-                        int x = 80 + (i - 6) * 150;
-                        if (touch_x >= x && touch_x <= x + 80 &&
-                            touch_y >= dock_y + 20 && touch_y <= dock_y + 100) {
-                            ui.current_screen = ui.apps[i].screen;
-                            break;
-                        }
-                    }
-                }
-                break;
+    // Handle gestures based on current screen
+    switch (ui.current_screen) {
+        case SCREEN_HOME:
+            if (gesture == GESTURE_TAP) {
+                printf("Tap detected at %d, %d\n", current.x, current.y);
                 
-            default:
-                // Back button for all other screens
-                if (ui.current_gesture.type == GESTURE_TAP &&
-                    touch_x >= 40 && touch_x <= 140 &&
-                    touch_y >= 40 && touch_y <= 90) {
-                    ui.current_screen = SCREEN_HOME;
+                // Check app icons (3x2 grid)
+                int apps_per_row = 3;
+                int icon_size = 120;
+                int icon_margin = 40;
+                int start_y = 150;
+                
+                for (int i = 0; i < 6; i++) {
+                    int row = i / apps_per_row;
+                    int col = i % apps_per_row;
+                    
+                    int x = col * (icon_size + icon_margin) + icon_margin + 
+                           (screen_width - (apps_per_row * (icon_size + icon_margin) - icon_margin)) / 2;
+                    int y = start_y + row * (icon_size + 100);
+                    
+                    if (current.x >= x && current.x <= x + icon_size &&
+                        current.y >= y && current.y <= y + icon_size) {
+                        printf("Opening app: %s\n", ui.apps[i].name);
+                        ui.current_screen = ui.apps[i].screen;
+                        break;
+                    }
                 }
-                break;
-        }
-        
-        ui.last_touch.pressed = 0;
+                
+                // Check dock apps
+                int dock_y = screen_height - 200;
+                for (int i = 6; i < ui.num_apps; i++) {
+                    int x = 80 + (i - 6) * 150;
+                    if (current.x >= x && current.x <= x + 80 &&
+                        current.y >= dock_y + 20 && current.y <= dock_y + 100) {
+                        printf("Opening dock app: %s\n", ui.apps[i].name);
+                        ui.current_screen = ui.apps[i].screen;
+                        break;
+                    }
+                }
+            }
+            break;
+            
+        default:
+            // Back button for all other screens
+            if (gesture == GESTURE_TAP &&
+                current.x >= 40 && current.x <= 140 &&
+                current.y >= 40 && current.y <= 90) {
+                printf("Back button pressed\n");
+                ui.current_screen = SCREEN_HOME;
+            }
+            break;
     }
 }
 
@@ -844,8 +984,17 @@ void render_ui() {
     }
     
     // Draw touch indicator for debugging
-    if (touch.active_touches > 0 && touch.points[0].pressed) {
-        draw_circle(fb.backbuffer, touch.points[0].x, touch.points[0].y, 20, COLOR_PRIMARY, screen_width, screen_height);
+    TouchPoint current_touch = get_current_touch();
+    if (touch_is_pressed()) {
+        // Draw touch point as a circle
+        draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 30, COLOR_PRIMARY, screen_width, screen_height);
+        // Draw smaller inner circle
+        draw_circle(fb.backbuffer, current_touch.x, current_touch.y, 15, COLOR_WHITE, screen_width, screen_height);
+        
+        // Show coordinates for debugging
+        char coord_text[32];
+        snprintf(coord_text, sizeof(coord_text), "%d,%d", current_touch.x, current_touch.y);
+        draw_text(fb.backbuffer, current_touch.x - 30, current_touch.y - 50, coord_text, COLOR_WHITE, screen_width, screen_height);
     }
 }
 
@@ -941,22 +1090,27 @@ int main() {
         return 1;
     }
     
-    if (init_touch() < 0) {
-        // Touch input not available - continue anyway
-        touch.fd = -1;
+    // Initialize touch system with screen dimensions
+    int screen_w = fb.vinfo.xres;
+    int screen_h = fb.vinfo.yres;
+    
+    if (init_touch_system(screen_w, screen_h) < 0) {
+        printf("Touch input not available - UI will work without touch\n");
     }
     
     init_ui();
     
     uint64_t frame_count = 0;
     
+    printf("Starting phone UI loop...\n");
+    
     while (running) {
         uint64_t frame_start = get_time_ns();
         
-        // Process touch input (synchronous)
-        process_touch_input();
+        // Process touch input events
+        process_touch_events();
         
-        // Handle input
+        // Handle UI input 
         handle_touch_input();
         
         // Render UI
@@ -981,7 +1135,7 @@ int main() {
         }
     }
     
-    cleanup_touch();
+    cleanup_touch_system();
     cleanup_framebuffer();
     printf("Phone UI ended.\n");
     return 0;
