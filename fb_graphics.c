@@ -39,7 +39,7 @@ typedef struct {
 TouchState touch = {0};
 
 void clear(uint32_t *buf, uint32_t color) {
-    memset(buf, color, screen_w * screen_h * sizeof(uint32_t));
+    for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
 }
 
 int measure_text_width(stbtt_fontinfo *font, const char *text, float scale) {
@@ -87,7 +87,7 @@ void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scal
 
 void init_touch() {
     num_touch = 0;
-    for (int i = 0; i < MAX_TOUCH_DEVICES; i++) {
+    for (int i = 0; i < 32; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
@@ -95,8 +95,11 @@ void init_touch() {
 
         struct input_absinfo ax, ay;
         if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) {
-            close(fd); continue;
+            printf("Skipped non-touch device: %s\n", path);
+            close(fd);
+            continue;
         }
+
         touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
         printf("Added touch device %s (fd=%d)\n", path, fd);
     }
@@ -161,15 +164,15 @@ int main() {
     screen_w = vinfo.xres; screen_h = vinfo.yres; stride = finfo.line_length;
     fbp = mmap(0, stride * screen_h, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
 
-    init_touch();
+    uint32_t *backbuf = malloc(screen_w * screen_h * sizeof(uint32_t));
 
+    init_touch();
     uint64_t start = now_ns();
     float pulse = 0.0f;
 
     while (1) {
         read_touch();
         if (touch.just_pressed) pulse = 1.0f;
-
         if (pulse > 0) pulse -= 0.05f;
 
         float elapsed = (now_ns() - start) / 1e9f;
@@ -177,7 +180,7 @@ int main() {
         float scroll_y = elapsed < 0.3f ? (1.0f - alpha) * screen_h : 0.0f;
         float scale_mod = 1.0f + 0.2f * sinf(pulse * 3.14f);
 
-        clear(fbp, COLOR_BG);
+        clear(backbuf, COLOR_BG);
 
         const char *text = "Welcome to Phone OS";
         float final_scale = scale * scale_mod;
@@ -185,7 +188,8 @@ int main() {
         int x = (screen_w - text_w) / 2;
         int y = screen_h - (screen_h / 6) + (int)scroll_y;
 
-        draw_text(fbp, &font, text, final_scale, x, y, alpha, COLOR_TEXT);
+        draw_text(backbuf, &font, text, final_scale, x, y, alpha, COLOR_TEXT);
+        memcpy(fbp, backbuf, screen_w * screen_h * sizeof(uint32_t));
 
         usleep(16000);
     }
@@ -193,5 +197,6 @@ int main() {
     munmap(fbp, stride * screen_h);
     close(fb_fd);
     free(ttf);
+    free(backbuf);
     return 0;
 }
