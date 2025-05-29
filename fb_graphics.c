@@ -18,7 +18,7 @@
 #define FONT_PATH "phone-os/Inter-Regular.otf"
 #define COLOR_BG 0xFF1A1A1A
 #define COLOR_TEXT 0xFFFFFFFF
-#define MAX_TOUCH_DEVICES 8
+#define MAX_TOUCH_DEVICES 32
 #define FONT_HEIGHT 64.0f
 #define LETTER_SPACING 2.0f
 
@@ -87,7 +87,7 @@ void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scal
 
 void init_touch() {
     num_touch = 0;
-    for (int i = 0; i < 32 && num_touch < MAX_TOUCH_DEVICES; i++) {
+    for (int i = 0; i < MAX_TOUCH_DEVICES; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
@@ -173,8 +173,8 @@ int main() {
         if (pulse > 0) pulse -= 0.05f;
 
         float elapsed = (now_ns() - start) / 1e9f;
-        float alpha = fmin(1.0f, elapsed / 0.5f);
-        float scroll_y = elapsed < 0.5f ? (1.0f - alpha) * screen_h : 0.0f;
+        float alpha = fmin(1.0f, elapsed / 0.3f);
+        float scroll_y = elapsed < 0.3f ? (1.0f - alpha) * screen_h : 0.0f;
         float scale_mod = 1.0f + 0.2f * sinf(pulse * 3.14f);
 
         clear(fbp, COLOR_BG);
