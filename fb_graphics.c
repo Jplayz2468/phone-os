@@ -11,6 +11,11 @@
 #include <stdint.h>
 #include <signal.h>
 
+// Define _GNU_SOURCE for aligned_alloc if not already defined
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 // Portrait mode: 1080x1920
 #define WIDTH 1080
 #define HEIGHT 1920
@@ -51,13 +56,13 @@ void signal_handler(int sig) {
 }
 
 // Fast rectangle fill using 64-bit writes where possible
-static inline void fast_fill_rect(uint32_t *buffer, int x, int y, int w, int h, uint32_t color) {
-    if (x < 0 || y < 0 || x + w > WIDTH || y + h > HEIGHT) return;
+static inline void fast_fill_rect(uint32_t *buffer, int x, int y, int w, int h, uint32_t color, int screen_width, int screen_height) {
+    if (x < 0 || y < 0 || x + w > screen_width || y + h > screen_height) return;
     
     uint64_t color64 = ((uint64_t)color << 32) | color;
     
     for (int row = y; row < y + h; row++) {
-        uint32_t *line = &buffer[row * WIDTH + x];
+        uint32_t *line = &buffer[row * screen_width + x];
         int pixels = w;
         
         // Align to 8-byte boundary if needed
@@ -81,7 +86,7 @@ static inline void fast_fill_rect(uint32_t *buffer, int x, int y, int w, int h, 
 }
 
 // Fast circle using integer math
-static inline void fast_fill_circle(uint32_t *buffer, int cx, int cy, int radius, uint32_t color) {
+static inline void fast_fill_circle(uint32_t *buffer, int cx, int cy, int radius, uint32_t color, int screen_width, int screen_height) {
     int r2 = radius * radius;
     int x_start = cx - radius;
     int x_end = cx + radius;
@@ -90,14 +95,14 @@ static inline void fast_fill_circle(uint32_t *buffer, int cx, int cy, int radius
     
     // Clip to screen bounds
     if (x_start < 0) x_start = 0;
-    if (x_end >= WIDTH) x_end = WIDTH - 1;
+    if (x_end >= screen_width) x_end = screen_width - 1;
     if (y_start < 0) y_start = 0;
-    if (y_end >= HEIGHT) y_end = HEIGHT - 1;
+    if (y_end >= screen_height) y_end = screen_height - 1;
     
     for (int y = y_start; y <= y_end; y++) {
         int dy = y - cy;
         int dy2 = dy * dy;
-        uint32_t *line = &buffer[y * WIDTH];
+        uint32_t *line = &buffer[y * screen_width];
         
         for (int x = x_start; x <= x_end; x++) {
             int dx = x - cx;
@@ -109,22 +114,24 @@ static inline void fast_fill_circle(uint32_t *buffer, int cx, int cy, int radius
 }
 
 // Clear screen with efficient memset
-static inline void clear_screen(uint32_t *buffer, uint32_t color) {
+static inline void clear_screen(uint32_t *buffer, uint32_t color, int screen_width, int screen_height) {
+    int total_pixels = screen_width * screen_height;
+    
     if (color == 0) {
-        memset(buffer, 0, WIDTH * HEIGHT * sizeof(uint32_t));
+        memset(buffer, 0, total_pixels * sizeof(uint32_t));
     } else {
         // For non-zero colors, we need to fill properly
         uint64_t color64 = ((uint64_t)color << 32) | color;
         uint64_t *buffer64 = (uint64_t*)buffer;
-        size_t pairs = (WIDTH * HEIGHT) / 2;
+        size_t pairs = total_pixels / 2;
         
         for (size_t i = 0; i < pairs; i++) {
             buffer64[i] = color64;
         }
         
         // Handle odd pixel count
-        if ((WIDTH * HEIGHT) & 1) {
-            buffer[WIDTH * HEIGHT - 1] = color;
+        if (total_pixels & 1) {
+            buffer[total_pixels - 1] = color;
         }
     }
 }
@@ -144,74 +151,99 @@ int init_framebuffer() {
         return -1;
     }
 
+    // Get fixed screen information first
+    if (ioctl(fb.fb_fd, FBIOGET_FSCREENINFO, &fb.finfo) == -1) {
+        perror("Error reading fixed screen info");
+        return -1;
+    }
+
     // Get variable screen information
     if (ioctl(fb.fb_fd, FBIOGET_VSCREENINFO, &fb.vinfo) == -1) {
         perror("Error reading variable screen info");
         return -1;
     }
 
-    // Get fixed screen information
-    if (ioctl(fb.fb_fd, FBIOGET_FSCREENINFO, &fb.finfo) == -1) {
-        perror("Error reading fixed screen info");
-        return -1;
-    }
-
-    printf("Screen info: %dx%d, %d bpp\n", fb.vinfo.xres, fb.vinfo.yres, fb.vinfo.bits_per_pixel);
+    printf("Current screen: %dx%d, %d bpp, line_length=%d\n", 
+           fb.vinfo.xres, fb.vinfo.yres, fb.vinfo.bits_per_pixel, fb.finfo.line_length);
     
-    // Check if we need to set the resolution
+    // Use current resolution if different from target
+    int actual_width = fb.vinfo.xres;
+    int actual_height = fb.vinfo.yres;
+    
     if (fb.vinfo.xres != WIDTH || fb.vinfo.yres != HEIGHT) {
-        printf("Setting resolution to %dx%d...\n", WIDTH, HEIGHT);
-        fb.vinfo.xres = WIDTH;
-        fb.vinfo.yres = HEIGHT;
-        fb.vinfo.xres_virtual = WIDTH;
-        fb.vinfo.yres_virtual = HEIGHT * 2; // Double buffer
-        
-        if (ioctl(fb.fb_fd, FBIOPUT_VSCREENINFO, &fb.vinfo) == -1) {
-            perror("Error setting variable screen info");
-            return -1;
-        }
+        printf("Note: Using actual resolution %dx%d instead of target %dx%d\n", 
+               actual_width, actual_height, WIDTH, HEIGHT);
     }
 
-    // Calculate screen size
-    fb.screensize = fb.vinfo.xres * fb.vinfo.yres * fb.vinfo.bits_per_pixel / 8;
+    // Calculate screen size using actual framebuffer parameters
+    fb.screensize = fb.finfo.line_length * fb.vinfo.yres;
+    
+    printf("Framebuffer size: %zu bytes (line_length=%d)\n", fb.screensize, fb.finfo.line_length);
 
-    // Memory map the framebuffer
-    fb.framebuffer = (uint32_t*)mmap(0, fb.screensize * 2, PROT_READ | PROT_WRITE, MAP_SHARED, fb.fb_fd, 0);
+    // Try to memory map the framebuffer (single buffer first)
+    fb.framebuffer = (uint32_t*)mmap(0, fb.screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fb.fb_fd, 0);
     if (fb.framebuffer == MAP_FAILED) {
         perror("Error mapping framebuffer");
         return -1;
     }
 
-    // Set up back buffer (second half of mapped memory)
-    fb.backbuffer = fb.framebuffer + (WIDTH * HEIGHT);
+    // Allocate back buffer in system memory for double buffering
+    if (posix_memalign((void**)&fb.backbuffer, 64, actual_width * actual_height * sizeof(uint32_t)) != 0) {
+        perror("Error allocating back buffer");
+        munmap(fb.framebuffer, fb.screensize);
+        return -1;
+    }
+    
+    // Clear both buffers
+    memset(fb.framebuffer, 0, fb.screensize);
+    memset(fb.backbuffer, 0, actual_width * actual_height * sizeof(uint32_t));
 
-    printf("Framebuffer initialized: %dx%d, %zu bytes\n", WIDTH, HEIGHT, fb.screensize);
+    printf("Framebuffer initialized: %dx%d, %zu bytes\n", actual_width, actual_height, fb.screensize);
     return 0;
 }
 
 void cleanup_framebuffer() {
     if (fb.framebuffer != MAP_FAILED) {
-        munmap(fb.framebuffer, fb.screensize * 2);
+        munmap(fb.framebuffer, fb.screensize);
+    }
+    if (fb.backbuffer) {
+        free(fb.backbuffer);
     }
     if (fb.fb_fd >= 0) {
         close(fb.fb_fd);
     }
 }
 
-// Swap front and back buffers using pan display
+// Copy back buffer to front buffer (software double buffering)
 void swap_buffers() {
-    static int current_buffer = 0;
+    // Get actual dimensions
+    int actual_width = fb.vinfo.xres;
+    int actual_height = fb.vinfo.yres;
     
-    fb.vinfo.yoffset = current_buffer ? HEIGHT : 0;
-    ioctl(fb.fb_fd, FBIOPAN_DISPLAY, &fb.vinfo);
-    
-    current_buffer = !current_buffer;
-    fb.backbuffer = fb.framebuffer + (current_buffer ? 0 : WIDTH * HEIGHT);
+    // Copy back buffer to framebuffer
+    if (fb.finfo.line_length == actual_width * sizeof(uint32_t)) {
+        // Direct copy if line lengths match
+        memcpy(fb.framebuffer, fb.backbuffer, actual_width * actual_height * sizeof(uint32_t));
+    } else {
+        // Copy line by line if there's padding
+        uint32_t *src = fb.backbuffer;
+        uint8_t *dst = (uint8_t*)fb.framebuffer;
+        
+        for (int y = 0; y < actual_height; y++) {
+            memcpy(dst, src, actual_width * sizeof(uint32_t));
+            src += actual_width;
+            dst += fb.finfo.line_length;
+        }
+    }
 }
 
 void render_frame(MovingRect *rects, int num_rects, uint64_t frame_count) {
+    // Get actual screen dimensions
+    int screen_width = fb.vinfo.xres;
+    int screen_height = fb.vinfo.yres;
+    
     // Clear back buffer
-    clear_screen(fb.backbuffer, COLOR_BLACK);
+    clear_screen(fb.backbuffer, COLOR_BLACK, screen_width, screen_height);
     
     // Update and draw moving rectangles
     for (int i = 0; i < num_rects; i++) {
@@ -222,29 +254,29 @@ void render_frame(MovingRect *rects, int num_rects, uint64_t frame_count) {
         rect->y += rect->dy;
         
         // Bounce off edges
-        if (rect->x <= 0 || rect->x >= WIDTH - rect->size) {
+        if (rect->x <= 0 || rect->x >= screen_width - rect->size) {
             rect->dx = -rect->dx;
-            rect->x = (rect->x <= 0) ? 0 : WIDTH - rect->size;
+            rect->x = (rect->x <= 0) ? 0 : screen_width - rect->size;
         }
-        if (rect->y <= 0 || rect->y >= HEIGHT - rect->size) {
+        if (rect->y <= 0 || rect->y >= screen_height - rect->size) {
             rect->dy = -rect->dy;
-            rect->y = (rect->y <= 0) ? 0 : HEIGHT - rect->size;
+            rect->y = (rect->y <= 0) ? 0 : screen_height - rect->size;
         }
         
         // Draw rectangle
-        fast_fill_rect(fb.backbuffer, (int)rect->x, (int)rect->y, rect->size, rect->size, rect->color);
+        fast_fill_rect(fb.backbuffer, (int)rect->x, (int)rect->y, rect->size, rect->size, rect->color, screen_width, screen_height);
     }
     
     // Draw some animated circles for visual interest
     int num_circles = 5;
     for (int i = 0; i < num_circles; i++) {
         float angle = (frame_count * 0.02f) + (i * 2.0f * M_PI / num_circles);
-        int cx = WIDTH/2 + (int)(200 * cos(angle));
-        int cy = HEIGHT/2 + (int)(300 * sin(angle));
+        int cx = screen_width/2 + (int)(200 * cos(angle));
+        int cy = screen_height/2 + (int)(300 * sin(angle));
         int radius = 30 + (int)(20 * sin(frame_count * 0.05f + i));
         
         uint32_t colors[] = {COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_CYAN, COLOR_MAGENTA};
-        fast_fill_circle(fb.backbuffer, cx, cy, radius, colors[i]);
+        fast_fill_circle(fb.backbuffer, cx, cy, radius, colors[i], screen_width, screen_height);
     }
     
     // Draw frame counter
@@ -255,7 +287,7 @@ void render_frame(MovingRect *rects, int num_rects, uint64_t frame_count) {
     int text_x = 10;
     int text_y = 10;
     for (int i = 0; fps_text[i] && i < 20; i++) {
-        fast_fill_rect(fb.backbuffer, text_x + i * 12, text_y, 8, 16, COLOR_WHITE);
+        fast_fill_rect(fb.backbuffer, text_x + i * 12, text_y, 8, 16, COLOR_WHITE, screen_width, screen_height);
     }
 }
 
@@ -274,9 +306,12 @@ int main() {
     
     // Initialize moving rectangles
     MovingRect rects[8];
+    int screen_width = fb.vinfo.xres;
+    int screen_height = fb.vinfo.yres;
+    
     for (int i = 0; i < 8; i++) {
-        rects[i].x = rand() % (WIDTH - 100);
-        rects[i].y = rand() % (HEIGHT - 100);
+        rects[i].x = rand() % (screen_width - 100);
+        rects[i].y = rand() % (screen_height - 100);
         rects[i].dx = (rand() % 10 - 5) * 2.0f;
         rects[i].dy = (rand() % 10 - 5) * 2.0f;
         rects[i].size = 50 + rand() % 50;
