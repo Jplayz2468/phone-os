@@ -192,6 +192,7 @@ int main() {
     int frame_count = 0, fps = 0;
 
     while (1) {
+        uint64_t frame_start = now_ns();
         read_touch();
         clear(fbp, COLOR_BG);
 
@@ -219,7 +220,9 @@ int main() {
         int y = screen_h / 2 + y_offset;
         draw_text(fbp, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
 
-        usleep(16000);
+        uint64_t frame_end = now_ns();
+        int64_t frame_time_us = (frame_end - frame_start) / 1000;
+        if (frame_time_us < 16000) usleep(16000 - frame_time_us);
     }
 
     munmap(fbp, stride * screen_h);
