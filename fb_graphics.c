@@ -1,5 +1,4 @@
-// Full C-based minimal phone "OS" with framebuffer UI and touch support (evdev based)
-// This version uses normalized coordinates for touch and verifies device capabilities
+// Full C-based minimal phone "OS" with framebuffer UI and confirmed touch support via evdev
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +37,7 @@ struct {
     AppMode mode;
     int abs_x_min, abs_x_max;
     int abs_y_min, abs_y_max;
+    int x, y, touching;
 } state;
 
 volatile int running = 1;
@@ -47,7 +47,6 @@ void handle_sigint(int sig) {
 }
 
 void fill_rect(int x, int y, int w, int h, uint32_t color) {
-    if (!state.bb) return;
     for (int j = y; j < y + h; j++) {
         for (int i = x; i < x + w; i++) {
             if (i >= 0 && j >= 0 && i < WIDTH && j < HEIGHT)
@@ -94,9 +93,10 @@ void draw_bounce(uint64_t frame) {
     fill_rect(x, y, 100, 100, COLOR_GREEN);
 }
 
-void handle_touch(int x_raw, int y_raw) {
-    int x = (x_raw - state.abs_x_min) * WIDTH / (state.abs_x_max - state.abs_x_min);
-    int y = (y_raw - state.abs_y_min) * HEIGHT / (state.abs_y_max - state.abs_y_min);
+void check_touch_event() {
+    if (!state.touching) return;
+    int x = (state.x - state.abs_x_min) * WIDTH / (state.abs_x_max - state.abs_x_min);
+    int y = (state.y - state.abs_y_min) * HEIGHT / (state.abs_y_max - state.abs_y_min);
     if (state.mode == APP_HOME) {
         if (y > 300 && y < 600) {
             if (x > 100 && x < 400) state.mode = APP_CLOCK;
@@ -106,27 +106,27 @@ void handle_touch(int x_raw, int y_raw) {
     } else {
         state.mode = APP_HOME;
     }
+    state.touching = 0;
 }
 
 void poll_input() {
     struct input_event ev;
-    static int last_x = -1, last_y = -1;
     while (read(state.input_fd, &ev, sizeof(ev)) > 0) {
         if (ev.type == EV_ABS) {
-            if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X) last_x = ev.value;
-            if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y) last_y = ev.value;
+            if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X) state.x = ev.value;
+            if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y) state.y = ev.value;
         }
-        if (ev.type == EV_KEY && ev.code == BTN_TOUCH && ev.value == 0 && last_x >= 0 && last_y >= 0) {
-            handle_touch(last_x, last_y);
-            last_x = last_y = -1;
+        if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
+            state.touching = ev.value;
+            if (!ev.value) check_touch_event();
         }
     }
 }
 
 int find_touchscreen() {
-    struct dirent *ent;
     DIR *d = opendir("/dev/input");
     if (!d) return -1;
+    struct dirent *ent;
     char path[256];
     while ((ent = readdir(d))) {
         if (strncmp(ent->d_name, "event", 5) == 0) {
@@ -172,6 +172,8 @@ int main() {
     state.bb = (uint32_t*)calloc(WIDTH * HEIGHT, sizeof(uint32_t));
     state.input_fd = find_touchscreen();
     state.mode = APP_HOME;
+    state.x = state.y = 0;
+    state.touching = 0;
 
     uint64_t frame = 0;
     while (running) {
