@@ -209,12 +209,13 @@ int main() {
         snprintf(info, sizeof(info), "CPU: %.1f%%  FPS: %d", cpu_usage, fps);
         draw_text(fbp, &font, info, scale * 0.3f, 20, 20, 1.0f, COLOR_INFO);
 
-        float anim_scale = 1.0f + 0.1f * sinf(t * 2);
-        int y_offset = (int)(30 * sinf(t * 1.5f));
+        float anim_scale = 1.0f + 0.3f * sinf(t * 2);
+        int y_offset = (int)(60 * sinf(t * 1.5f));
+        int x_offset = (int)(60 * cosf(t * 1.1f));
         float final_scale = scale * anim_scale;
         const char *msg = "Welcome to Phone OS";
         int text_w = measure_text_width(&font, msg, final_scale);
-        int x = (screen_w - text_w) / 2 + (int)(20 * cosf(t * 1.2f));
+        int x = (screen_w - text_w) / 2 + x_offset;
         int y = screen_h / 2 + y_offset;
         draw_text(fbp, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
 
