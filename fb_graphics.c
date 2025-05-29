@@ -2,8 +2,6 @@
 // This version replaces keypress detection with touchscreen input detection (e.g., from /dev/input/eventX)
 // Apps: Home screen + Clock + Bounce + Color Cycle, switchable by touch
 
-// Due to size, the full integration including evdev setup and event parsing will be shown here:
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -42,6 +40,10 @@ struct {
 } state;
 
 volatile int running = 1;
+
+void handle_sigint(int sig) {
+    running = 0;
+}
 
 void fill_rect(int x, int y, int w, int h, uint32_t color) {
     if (!state.bb) return;
@@ -148,7 +150,7 @@ void cleanup() {
 }
 
 int main() {
-    signal(SIGINT, [](int){ running = 0; });
+    signal(SIGINT, handle_sigint);
     state.fb_fd = open("/dev/fb0", O_RDWR);
     ioctl(state.fb_fd, FBIOGET_FSCREENINFO, &state.finfo);
     ioctl(state.fb_fd, FBIOGET_VSCREENINFO, &state.vinfo);
