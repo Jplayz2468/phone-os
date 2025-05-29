@@ -10,6 +10,7 @@
       box-sizing: border-box;
       -webkit-user-select: none;
       user-select: none;
+      cursor: none !important;
     }
     
     html, body {
@@ -19,10 +20,12 @@
       background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
       font-family: Arial, sans-serif;
       color: white;
-      cursor: none;
+      cursor: none !important;
       position: fixed;
       top: 0;
       left: 0;
+      margin: 0;
+      padding: 0;
     }
     
     .phone-container {
@@ -33,6 +36,8 @@
       height: 1920px;
       background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
       overflow: hidden;
+      margin: 0;
+      padding: 0;
     }
     
     /* Status Bar */
@@ -42,7 +47,7 @@
       left: 0;
       width: 100%;
       height: 80px;
-      background: rgba(0, 0, 0, 0.5);
+      background: rgba(0, 0, 0, 0.8);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -50,6 +55,7 @@
       z-index: 1000;
       font-size: 28px;
       font-weight: bold;
+      margin: 0;
     }
     
     .status-left {
@@ -110,13 +116,18 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      cursor: pointer;
+      cursor: none !important;
       transition: background 0.1s ease;
       border: 2px solid rgba(255, 255, 255, 0.3);
     }
     
     .app-icon:active {
       background: rgba(255, 255, 255, 0.4);
+      cursor: none !important;
+    }
+    
+    .app-icon:hover {
+      cursor: none !important;
     }
     
     .app-emoji {
@@ -124,12 +135,14 @@
       font-weight: bold;
       margin-bottom: 15px;
       color: white;
+      cursor: none !important;
     }
     
     .app-name {
       font-size: 24px;
       font-weight: bold;
       text-align: center;
+      cursor: none !important;
     }
     
     /* App Screens */
@@ -165,7 +178,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      cursor: pointer;
+      cursor: none !important;
       font-size: 40px;
       font-weight: bold;
       margin-right: 30px;
@@ -173,6 +186,11 @@
     
     .back-button:active {
       background: rgba(255, 255, 255, 0.5);
+      cursor: none !important;
+    }
+    
+    .back-button:hover {
+      cursor: none !important;
     }
     
     .app-title {
@@ -218,12 +236,17 @@
       justify-content: center;
       font-size: 48px;
       font-weight: bold;
-      cursor: pointer;
+      cursor: none !important;
       border: 2px solid rgba(255, 255, 255, 0.3);
     }
     
     .calc-btn:active {
       background: rgba(255, 255, 255, 0.4);
+      cursor: none !important;
+    }
+    
+    .calc-btn:hover {
+      cursor: none !important;
     }
     
     .calc-btn.operator {
@@ -253,6 +276,7 @@
       background: rgba(255, 255, 255, 0.3);
       outline: none;
       -webkit-appearance: none;
+      cursor: none !important;
     }
     
     .slider::-webkit-slider-thumb {
@@ -261,7 +285,11 @@
       height: 40px;
       border-radius: 50%;
       background: white;
-      cursor: pointer;
+      cursor: none !important;
+    }
+    
+    .slider:hover {
+      cursor: none !important;
     }
     
     /* Notifications */
@@ -292,6 +320,19 @@
     .notification-message {
       font-size: 24px;
       opacity: 0.8;
+    }
+    
+    /* Force hide cursor on all elements */
+    input, button, div, span, * {
+      cursor: none !important;
+    }
+    
+    input:hover, button:hover, div:hover, span:hover, *:hover {
+      cursor: none !important;
+    }
+    
+    input:active, button:active, div:active, span:active, *:active {
+      cursor: none !important;
     }
   </style>
 </head>
@@ -406,6 +447,10 @@
     let currentApp = 'home';
     let apps = {};
 
+    // Force hide cursor completely
+    document.body.style.cursor = 'none';
+    document.documentElement.style.cursor = 'none';
+
     // WebSocket connection
     function connectWebSocket() {
       socket = new WebSocket("ws://localhost:8765");
@@ -437,7 +482,6 @@
           showNotification(data.title, data.message);
           break;
         case 'app_opened':
-          // Don't automatically open app from server response
           break;
       }
     }
@@ -474,7 +518,6 @@
     }
 
     function openApp(appId) {
-      // Close any currently open app first
       document.querySelectorAll('.app-screen').forEach(screen => {
         screen.classList.remove('active');
       });
