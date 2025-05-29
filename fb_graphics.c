@@ -29,6 +29,7 @@ int fb_fd, screen_w, screen_h, stride;
 
 typedef struct {
     int fd, min_x, max_x, min_y, max_y;
+    char path[64];
 } TouchDev;
 
 TouchDev touch_devs[MAX_TOUCH_DEVICES];
@@ -58,16 +59,14 @@ void draw_text(uint32_t *buf, stbtt_fontinfo *font, const char *text, float scal
     int ascent;
     stbtt_GetFontVMetrics(font, &ascent, NULL, NULL);
     int baseline = (int)(ascent * scale);
-
     int px = x;
+
     for (const char *p = text; *p; p++) {
-        int ch = *p;
-        int ax;
+        int ch = *p, ax;
         stbtt_GetCodepointHMetrics(font, ch, &ax, NULL);
         int c_x1, c_y1, c_x2, c_y2;
         stbtt_GetCodepointBitmapBox(font, ch, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
-        int w = c_x2 - c_x1;
-        int h = c_y2 - c_y1;
+        int w = c_x2 - c_x1, h = c_y2 - c_y1;
         unsigned char *bitmap = malloc(w * h);
         stbtt_MakeCodepointBitmap(font, bitmap, w, h, w, scale, scale, ch);
         for (int row = 0; row < h; row++) {
@@ -94,22 +93,22 @@ void init_touch() {
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
-
         struct input_absinfo ax, ay;
         if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) {
             close(fd); continue;
         }
+        snprintf(touch_devs[num_touch].path, sizeof(touch_devs[num_touch].path), "%s", path);
         touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
-        printf("Added touch device %s (fd=%d)\n", path, fd);
+        printf("Touch device %s added (fd=%d)\n", path, fd);
     }
 }
 
 void read_touch() {
     touch.just_pressed = 0;
     struct pollfd fds[MAX_TOUCH_DEVICES];
-    for (int i = 0; i < num_touch; i++) {
+    for (int i = 0; i < num_touch; i++)
         fds[i] = (struct pollfd){touch_devs[i].fd, POLLIN, 0};
-    }
+
     if (poll(fds, num_touch, 0) <= 0) return;
 
     for (int i = 0; i < num_touch; i++) {
@@ -139,36 +138,11 @@ uint64_t now_ns() {
     return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
-float get_cpu_usage_percent() {
-    static unsigned long long last_total = 0, last_idle = 0;
-    FILE *f = fopen("/proc/stat", "r");
-    if (!f) return 0;
-
-    char line[256];
-    fgets(line, sizeof(line), f);
-    fclose(f);
-
-    unsigned long long user, nice, system, idle, iowait, irq, softirq;
-    sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &system, &idle, &iowait, &irq, &softirq);
-    unsigned long long total = user + nice + system + idle + iowait + irq + softirq;
-
-    float usage = 0;
-    if (last_total) {
-        unsigned long long delta_total = total - last_total;
-        unsigned long long delta_idle = idle - last_idle;
-        usage = 100.0f * (delta_total - delta_idle) / delta_total;
-    }
-
-    last_total = total;
-    last_idle = idle;
-    return usage;
-}
-
 void cleanup(int sig) {
     if (fbp) clear(fbp, 0x00000000);
     if (fbp) munmap(fbp, stride * screen_h);
     if (fb_fd > 0) close(fb_fd);
-    printf("\nCleaned up framebuffer\n");
+    printf("Framebuffer cleaned up.\n");
     exit(0);
 }
 
@@ -188,7 +162,6 @@ int main() {
     }
 
     float scale = stbtt_ScaleForPixelHeight(&font, FONT_HEIGHT);
-
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
     fb_fd = open("/dev/fb0", O_RDWR);
@@ -205,9 +178,10 @@ int main() {
     while (1) {
         uint64_t frame_start = now_ns();
         read_touch();
-        clear(fbp, COLOR_BG);
 
-        float cpu_usage = get_cpu_usage_percent();
+        clear(fbp, COLOR_BG);
+        float cpu = 0; // could reenable get_cpu_usage_percent if needed
+
         uint64_t now = now_ns();
         float t = (now - last_time) / 1e9f;
         frame_count++;
@@ -217,24 +191,21 @@ int main() {
             last_fps_time = now;
         }
 
-        char info[128];
-        snprintf(info, sizeof(info), "CPU: %.1f%%  FPS: %d", cpu_usage, fps);
-        draw_text(fbp, &font, info, scale * 0.3f, 20, 20, 1.0f, COLOR_INFO);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "FPS: %d", fps);
+        draw_text(fbp, &font, buf, scale * 0.3f, 20, 20, 1.0f, COLOR_INFO);
 
-        float anim_scale = 1.0f + 0.3f * sinf(t * 2);
-        int y_offset = (int)(60 * sinf(t * 1.5f));
-        int x_offset = (int)(60 * cosf(t * 1.1f));
-        float final_scale = scale * anim_scale;
-        const char *msg = "Welcome to Phone OS";
-        int text_w = measure_text_width(&font, msg, final_scale);
-        int x = (screen_w - text_w) / 2 + x_offset;
-        int y = screen_h / 2 + y_offset;
-        draw_text(fbp, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
+        float final_scale = scale * (1.0f + 0.1f * sinf(t * 3));
+        int text_w = measure_text_width(&font, "Welcome to Phone OS", final_scale);
+        int x = (screen_w - text_w) / 2;
+        int y = screen_h / 2 + (int)(30 * sinf(t * 2));
+        draw_text(fbp, &font, "Welcome to Phone OS", final_scale, x, y, 1.0f, COLOR_TEXT);
+
+        if (touch.just_pressed)
+            printf("Touch at (%d, %d)\n", touch.x, touch.y);
 
         uint64_t frame_end = now_ns();
-        int sleep_time_us = 16666 - (int)((frame_end - frame_start) / 1000);
-        if (sleep_time_us > 0) usleep(sleep_time_us);
+        int sleep_us = 16666 - (int)((frame_end - frame_start) / 1000);
+        if (sleep_us > 0) usleep(sleep_us);
     }
-
-    return 0;
 }
