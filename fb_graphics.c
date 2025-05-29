@@ -15,7 +15,6 @@
 #include <signal.h>
 #include <termios.h>
 #include <dirent.h>
-#include <pthread.h>
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -69,7 +68,6 @@ typedef struct {
     int fd;
     TouchPoint points[MAX_TOUCH_EVENTS];
     int active_touches;
-    pthread_t thread;
     volatile int running;
 } TouchInput;
 
@@ -158,15 +156,13 @@ static inline uint64_t get_time_ns() {
     return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
-// Setup terminal control
+// Setup terminal control - TTY3 optimized
 void setup_terminal() {
     orig_stdout = stdout;
     orig_stderr = stderr;
     
-    console_fd = open("/dev/console", O_RDWR);
-    if (console_fd < 0) {
-        console_fd = open("/dev/tty0", O_RDWR);
-    }
+    // For TTY3, we want to work with the current terminal
+    console_fd = open("/dev/tty", O_RDWR);
     if (console_fd < 0) {
         console_fd = STDIN_FILENO;
     }
@@ -186,19 +182,12 @@ void setup_terminal() {
     raw.c_oflag &= ~OPOST;
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
     
-    printf("\033[?25l\033[?7l\033[?47h\033[2J\033[H\033[0m");
+    // Clear screen and hide cursor
+    printf("\033[2J\033[H\033[?25l");
     fflush(stdout);
-    
-    freopen("/dev/null", "w", stdout);
-    freopen("/dev/null", "w", stderr);
 }
 
 void restore_terminal() {
-    if (orig_stdout) {
-        stdout = orig_stdout;
-        stderr = orig_stderr;
-    }
-    
     printf("Restoring system...\n");
     
     if (console_fd >= 0 && orig_console_mode >= 0) {
@@ -209,7 +198,7 @@ void restore_terminal() {
         ioctl(console_fd, KDSKBMODE, orig_kb_mode);
     }
     
-    printf("\033[?47l\033[?25h\033[?7h\033[0m\033[2J\033[H");
+    printf("\033[?25h\033[2J\033[H");
     fflush(stdout);
     
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
@@ -364,18 +353,16 @@ void draw_text(uint32_t *buffer, int x, int y, const char *text, uint32_t color,
     }
 }
 
-// Touch input handling
-void* touch_thread(void* arg) {
-    (void)arg; // Suppress unused parameter warning
+// Touch input handling - synchronous version
+void process_touch_input() {
+    if (touch.fd < 0) return;
     
     struct input_event ev;
-    int current_x = 0, current_y = 0;
-    int touch_active = 0;
+    static int current_x = 0, current_y = 0;
+    static int touch_active = 0;
     
-    while (touch.running) {
-        ssize_t bytes = read(touch.fd, &ev, sizeof(ev));
-        if (bytes < (ssize_t)sizeof(ev)) continue;
-        
+    // Read all available events (non-blocking)
+    while (read(touch.fd, &ev, sizeof(ev)) == sizeof(ev)) {
         switch (ev.type) {
             case EV_ABS:
                 if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
@@ -389,7 +376,7 @@ void* touch_thread(void* arg) {
                 if (ev.code == BTN_TOUCH || ev.code == BTN_LEFT) {
                     touch_active = ev.value;
                     if (touch.active_touches < MAX_TOUCH_EVENTS) {
-                        TouchPoint *point = &touch.points[touch.active_touches];
+                        TouchPoint *point = &touch.points[0];
                         point->x = current_x;
                         point->y = current_y;
                         point->pressed = touch_active;
@@ -406,7 +393,6 @@ void* touch_thread(void* arg) {
                 break;
         }
     }
-    return NULL;
 }
 
 int init_touch() {
@@ -416,6 +402,7 @@ int init_touch() {
         "/dev/input/event3", "/dev/input/event4", "/dev/input/event5"
     };
     
+    touch.fd = -1;
     for (int i = 0; i < 6; i++) {
         touch.fd = open(touch_devices[i], O_RDONLY | O_NONBLOCK);
         if (touch.fd >= 0) {
@@ -425,28 +412,20 @@ int init_touch() {
     }
     
     if (touch.fd < 0) {
-        printf("No touch device found, using mouse simulation\n");
+        printf("No touch device found\n");
         return -1;
     }
     
     touch.running = 1;
     touch.active_touches = 0;
     
-    if (pthread_create(&touch.thread, NULL, touch_thread, NULL) != 0) {
-        close(touch.fd);
-        return -1;
-    }
-    
     return 0;
 }
 
 void cleanup_touch() {
-    if (touch.running) {
-        touch.running = 0;
-        pthread_join(touch.thread, NULL);
-    }
     if (touch.fd >= 0) {
         close(touch.fd);
+        touch.fd = -1;
     }
 }
 
@@ -948,9 +927,8 @@ void swap_buffers() {
 }
 
 int main() {
-    printf("Orange Pi 5 Phone UI - Initializing...\n");
+    printf("Orange Pi 5 Phone UI - Starting on TTY3...\n");
     printf("Features: Touch Support, Apps, Modern UI\n");
-    printf("Press Ctrl+C to exit\n");
     fflush(stdout);
     
     signal(SIGINT, signal_handler);
@@ -964,7 +942,8 @@ int main() {
     }
     
     if (init_touch() < 0) {
-        printf("Touch input not available - UI will work but no touch interaction\n");
+        // Touch input not available - continue anyway
+        touch.fd = -1;
     }
     
     init_ui();
@@ -973,6 +952,9 @@ int main() {
     
     while (running) {
         uint64_t frame_start = get_time_ns();
+        
+        // Process touch input (synchronous)
+        process_touch_input();
         
         // Handle input
         handle_touch_input();
