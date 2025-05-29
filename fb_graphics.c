@@ -26,7 +26,7 @@ uint32_t *fbp = NULL;
 int fb_fd, screen_w, screen_h, stride;
 
 typedef struct {
-    int fd, min_x, max_x, min_y, max_y;
+    int fd;
 } TouchDev;
 
 TouchDev touch_devs[MAX_TOUCH_DEVICES];
@@ -93,15 +93,8 @@ void init_touch() {
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
 
-        struct input_absinfo ax, ay;
-        if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) {
-            printf("Skipped non-touch device: %s\n", path);
-            close(fd);
-            continue;
-        }
-
-        touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
-        printf("Added touch device %s (fd=%d)\n", path, fd);
+        touch_devs[num_touch++].fd = fd;
+        printf("Added input device %s (fd=%d)\n", path, fd);
     }
 }
 
@@ -119,9 +112,9 @@ void read_touch() {
         while (read(touch_devs[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
             if (ev.type == EV_ABS) {
                 if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X)
-                    touch.x = (ev.value - touch_devs[i].min_x) * screen_w / (touch_devs[i].max_x - touch_devs[i].min_x + 1);
+                    touch.x = ev.value;
                 if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y)
-                    touch.y = (ev.value - touch_devs[i].min_y) * screen_h / (touch_devs[i].max_y - touch_devs[i].min_y + 1);
+                    touch.y = ev.value;
                 if (ev.code == ABS_MT_TRACKING_ID) {
                     if (ev.value == -1) touch.pressed = 0;
                     else { touch.pressed = 1; touch.just_pressed = 1; }
