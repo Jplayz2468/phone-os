@@ -14,6 +14,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <signal.h>
 
 #define FONT_PATH "phone-os/Inter-Regular.otf"
 #define COLOR_BG 0xFF1A1A1A
@@ -163,7 +164,17 @@ float get_cpu_usage_percent() {
     return usage;
 }
 
+void cleanup(int sig) {
+    if (fbp) clear(fbp, 0x00000000);
+    if (fbp) munmap(fbp, stride * screen_h);
+    if (fb_fd > 0) close(fb_fd);
+    printf("\nCleaned up framebuffer\n");
+    exit(0);
+}
+
 int main() {
+    signal(SIGINT, cleanup);
+
     FILE *f = fopen(FONT_PATH, "rb");
     if (!f) { perror("Font load failed"); exit(1); }
 
@@ -221,12 +232,9 @@ int main() {
         draw_text(fbp, &font, msg, final_scale, x, y, 1.0f, COLOR_TEXT);
 
         uint64_t frame_end = now_ns();
-        int64_t frame_time_us = (frame_end - frame_start) / 1000;
-        if (frame_time_us < 16000) usleep(16000 - frame_time_us);
+        int sleep_time_us = 16666 - (int)((frame_end - frame_start) / 1000);
+        if (sleep_time_us > 0) usleep(sleep_time_us);
     }
 
-    munmap(fbp, stride * screen_h);
-    close(fb_fd);
-    free(ttf);
     return 0;
 }
