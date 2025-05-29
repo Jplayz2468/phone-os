@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=1080, height=1920, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+  <meta name="viewport" content="width=1080, height=1920, user-scalable=no, initial-scale=1.0">
   <style>
     * {
       margin: 0;
@@ -15,156 +15,79 @@
       height: 1920px !important;
       overflow: hidden;
       background: black;
-      font-family: sans-serif;
-      color: lime;
+      font-family: Arial, sans-serif;
+      color: white;
       cursor: none;
       position: fixed;
       top: 0;
       left: 0;
       zoom: 1.0 !important;
-      transform: scale(1.0) !important;
     }
     
-    #container {
+    #main {
       position: absolute;
       top: 0;
       left: 0;
       width: 1080px;
       height: 1920px;
-      background: black;
-      border: 2px solid red; /* Debug border - remove once working */
-    }
-    
-    #fps {
-      position: absolute;
-      top: 20px;
-      left: 20px;
-      padding: 10px 15px;
-      font-size: 24px;
-      background: rgba(0, 0, 0, 0.9);
-      border: 2px solid lime;
-      z-index: 100;
-    }
-    
-    #content {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
+      background: darkgreen;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
       text-align: center;
-      width: 800px;
     }
     
     h1 {
-      font-size: 72px;
-      margin-bottom: 40px;
-      color: lime;
-    }
-    
-    #colorBox {
-      width: 400px;
-      height: 400px;
-      margin: 40px auto;
-      border: 4px solid lime;
-      background: darkgreen;
-      transition: background-color 0.5s ease;
+      font-size: 120px;
+      margin-bottom: 60px;
+      color: white;
     }
     
     p {
-      font-size: 48px;
-      margin-top: 40px;
-      color: lime;
+      font-size: 60px;
+      color: white;
     }
     
-    #debug {
-      position: absolute;
-      bottom: 20px;
-      left: 20px;
-      font-size: 20px;
-      color: yellow;
-      background: rgba(0, 0, 0, 0.8);
-      padding: 10px;
+    #box {
+      width: 300px;
+      height: 300px;
+      background: red;
+      margin: 60px 0;
+      border: 5px solid white;
     }
   </style>
 </head>
 <body>
-  <div id="container">
-    <div id="fps">FPS: --</div>
-    <div id="content">
-      <h1>FULLSCREEN FIXED</h1>
-      <div id="colorBox"></div>
-      <p>Orange Pi 5 - 1080x1920</p>
-    </div>
-    <div id="debug">
-      Size: <span id="sizeInfo">--</span><br>
-      DPR: <span id="dprInfo">--</span>
-    </div>
+  <div id="main">
+    <h1>HELLO</h1>
+    <div id="box"></div>
+    <p>Orange Pi 5</p>
   </div>
 
   <script>
-    // Force device pixel ratio to 1 if it's not
+    // Force device pixel ratio fix
     if (window.devicePixelRatio !== 1) {
-      console.warn('Device pixel ratio is:', window.devicePixelRatio);
-      // Try to force it by applying CSS zoom
       document.documentElement.style.zoom = (1 / window.devicePixelRatio);
     }
 
-    // Debug info
-    function updateDebugInfo() {
-      document.getElementById('sizeInfo').textContent = 
-        `${window.innerWidth}x${window.innerHeight} | Screen: ${screen.width}x${screen.height}`;
-      document.getElementById('dprInfo').textContent = window.devicePixelRatio;
-    }
-    
-    updateDebugInfo();
-    window.addEventListener('resize', updateDebugInfo);
-
-    // Force exact dimensions
-    function enforceSize() {
-      document.documentElement.style.width = '1080px';
-      document.documentElement.style.height = '1920px';
-      document.body.style.width = '1080px';
-      document.body.style.height = '1920px';
-      updateDebugInfo();
-    }
-
-    // FPS counter
-    let lastTime = performance.now();
-    let frames = 0;
-    let fps = 0;
-
-    function updateFPS() {
-      frames++;
-      const now = performance.now();
-      if (now - lastTime >= 1000) {
-        fps = frames;
-        frames = 0;
-        lastTime = now;
-        document.getElementById("fps").innerText = `FPS: ${fps}`;
-      }
-      requestAnimationFrame(updateFPS);
-    }
-
-    updateFPS();
-    
-    window.addEventListener('load', enforceSize);
-    window.addEventListener('resize', enforceSize);
-
-    // WebSocket connection
+    // WebSocket connection for color changes
     const socket = new WebSocket("ws://localhost:8765");
-    const colorBox = document.getElementById("colorBox");
+    const main = document.getElementById("main");
+    const box = document.getElementById("box");
     
     socket.onmessage = (msg) => {
-      document.body.style.background = msg.data;
-      colorBox.style.background = msg.data === 'black' ? 'darkgreen' : 'darkred';
+      if (msg.data === 'black') {
+        main.style.background = 'black';
+        box.style.background = 'lime';
+      } else {
+        main.style.background = 'darkgreen';
+        box.style.background = 'red';
+      }
     };
 
     socket.onerror = (error) => {
       console.log('WebSocket error:', error);
-    };
-
-    socket.onclose = () => {
-      console.log('WebSocket connection closed');
     };
   </script>
 </body>
