@@ -42,20 +42,23 @@ void draw_text(uint32_t *fb, int x, int y, const char *text, stbtt_bakedchar *cd
 }
 
 int main() {
-    // Load font
+    // Load font from correct path
     FILE *f = fopen(FONT_PATH, "rb");
-    if (!f) { perror("Font load failed"); return 1; }
+    if (!f) { perror("Font load failed"); exit(1); }
 
-    fseek(f, 0, SEEK_END); int size = ftell(f); rewind(f);
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    rewind(f);
     unsigned char *ttf = malloc(size);
-    fread(ttf, 1, size, f); fclose(f);
+    fread(ttf, 1, size, f);
+    fclose(f);
 
     stbtt_bakedchar cdata[96];
     unsigned char *bitmap = malloc(512 * 512);
     stbtt_BakeFontBitmap(ttf, 0, 32.0, bitmap, 512, 512, 32, 96, cdata);
     free(ttf);
 
-    // Framebuffer
+    // Framebuffer setup
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
     fb_fd = open("/dev/fb0", O_RDWR);
@@ -63,13 +66,16 @@ int main() {
 
     ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo);
     ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
-    screen_w = vinfo.xres; screen_h = vinfo.yres; stride = finfo.line_length;
+    screen_w = vinfo.xres;
+    screen_h = vinfo.yres;
+    stride = finfo.line_length;
 
     fbp = mmap(0, stride * screen_h, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
 
     // Clear screen
     for (int i = 0; i < screen_w * screen_h; i++) fbp[i] = COLOR_BG;
 
+    // Draw text
     draw_text(fbp, 100, 100, "Hello from Phone OS", cdata, bitmap, 512, 512, COLOR_TEXT);
 
     sleep(5);
