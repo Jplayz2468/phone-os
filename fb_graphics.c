@@ -488,60 +488,64 @@ void handle_gestures() {
         int dy = touch.y - touch.start_y;
         int distance = sqrt(dx*dx + dy*dy);
         
-        // Very loose swipe detection - just 40px movement in any direction
-        if (distance > 40) {
+        // Very loose swipe detection - just 15px movement for slow drags
+        if (distance > 15) {
             
-            // SWIPE UP detection with loose rectangular zones
-            if (dy < -20) { // Any upward movement of 20px
+            // SWIPE UP detection with zones extending to very bottom
+            if (dy < -10) { // Any upward movement of just 10px
                 if (current_state == LOCK_SCREEN) {
-                    // Can swipe up from anywhere on bottom 2/3 of screen
-                    if (touch.start_y > screen_h / 3) {
+                    // Can swipe up from anywhere on bottom half of screen (including very bottom)
+                    if (touch.start_y >= screen_h / 2) {
                         printf("Swipe up from lock screen detected!\n");
                         current_state = PIN_ENTRY;
                         swipe_handled = 1;
                         touch.action_taken = 1;
                     }
                 } else if (current_state == APP_SCREEN) {
-                    // Can swipe up from anywhere to go home
-                    printf("Swipe up from app detected!\n");
-                    current_state = HOME_SCREEN;
-                    swipe_handled = 1;
-                    touch.action_taken = 1;
+                    // Can swipe up from bottom 20% of screen (including very bottom edge)
+                    if (touch.start_y >= (screen_h * 4 / 5)) {
+                        printf("Swipe up from app detected!\n");
+                        current_state = HOME_SCREEN;
+                        swipe_handled = 1;
+                        touch.action_taken = 1;
+                    }
                 }
             }
             
             // SWIPE DOWN detection
-            else if (dy > 20) { // Any downward movement of 20px
+            else if (dy > 10) { // Any downward movement of just 10px
                 if (current_state == PIN_ENTRY) {
-                    // Can swipe down from anywhere to go back to lock
-                    printf("Swipe down from PIN entry detected!\n");
-                    current_state = LOCK_SCREEN;
-                    memset(pin_code, 0, sizeof(pin_code));
-                    swipe_handled = 1;
-                    touch.action_taken = 1;
+                    // Can swipe down from anywhere in top half of screen
+                    if (touch.start_y <= screen_h / 2) {
+                        printf("Swipe down from PIN entry detected!\n");
+                        current_state = LOCK_SCREEN;
+                        memset(pin_code, 0, sizeof(pin_code));
+                        swipe_handled = 1;
+                        touch.action_taken = 1;
+                    }
                 }
             }
         }
     }
     
-    // Also check when touch ends (backup detection)
+    // Also check when touch ends (backup detection with even more forgiving thresholds)
     if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
         int distance = sqrt(dx*dx + dy*dy);
         
-        if (distance > 30) { // Even more forgiving on release
-            if (dy < -15) { // Swipe up
-                if (current_state == LOCK_SCREEN && touch.start_y > screen_h / 3) {
+        if (distance > 8) { // Super forgiving on release - just 8px movement
+            if (dy < -5) { // Swipe up - just 5px movement
+                if (current_state == LOCK_SCREEN && touch.start_y >= screen_h / 2) {
                     printf("Swipe up from lock screen detected (on release)!\n");
                     current_state = PIN_ENTRY;
                     swipe_handled = 1;
-                } else if (current_state == APP_SCREEN) {
+                } else if (current_state == APP_SCREEN && touch.start_y >= (screen_h * 4 / 5)) {
                     printf("Swipe up from app detected (on release)!\n");
                     current_state = HOME_SCREEN;
                     swipe_handled = 1;
                 }
-            } else if (dy > 15 && current_state == PIN_ENTRY) { // Swipe down
+            } else if (dy > 5 && current_state == PIN_ENTRY && touch.start_y <= screen_h / 2) {
                 printf("Swipe down from PIN entry detected (on release)!\n");
                 current_state = LOCK_SCREEN;
                 memset(pin_code, 0, sizeof(pin_code));
