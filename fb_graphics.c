@@ -61,6 +61,7 @@ typedef struct {
     int x, y, pressed, last_pressed;
     int start_x, start_y, is_swiping;
     uint64_t last_touch_time;
+    int action_taken; // Prevent double-clicks
 } Touch;
 
 // Global variables
@@ -379,8 +380,8 @@ int point_near_rect(int px, int py, int x, int y, int w, int h) {
 }
 
 void handle_touch_input() {
-    // Process ANY touch that's currently active - no barriers
-    if (!touch.pressed) return;
+    // Process touches but prevent double-clicks from single touch
+    if (!touch.pressed || touch.action_taken) return;
     
     if (current_state == PIN_ENTRY) {
         // PIN pad with very generous proximity detection
@@ -403,6 +404,8 @@ void handle_touch_input() {
             int dy = touch.y - center_y;
             if ((dx*dx + dy*dy) <= (100*100)) {
                 printf("PIN button %c pressed!\n", pin_labels[i]);
+                touch.action_taken = 1; // Prevent double-click
+                
                 if (strlen(pin_code) < 4) {
                     char digit[2] = {pin_labels[i], 0};
                     strcat(pin_code, digit);
@@ -437,6 +440,7 @@ void handle_touch_input() {
             if (touch.x >= (icon_x - 50) && touch.x < (icon_x + ICON_SIZE + 50) &&
                 touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
                 printf("App %s launched!\n", apps[i].name);
+                touch.action_taken = 1; // Prevent double-click
                 current_app_id = i;
                 current_state = APP_SCREEN;
                 return;
@@ -460,6 +464,7 @@ void handle_touch_input() {
             if (touch.x >= (btn_x - 40) && touch.x < (btn_x + 140 + 40) &&
                 touch.y >= (btn_y - 40) && touch.y < (btn_y + 100 + 40)) {
                 printf("Calculator button %c pressed!\n", calc_btns[i]);
+                touch.action_taken = 1; // Prevent double-click
                 return;
             }
         }
@@ -477,36 +482,79 @@ void handle_gestures() {
         swipe_handled = 0;
     }
     
-    // Detect swipe when touch ends
-    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled) {
+    // Detect swipe while dragging (more responsive) or when touch ends
+    if (touch.pressed && touch.is_swiping && !swipe_handled && !touch.action_taken) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
         int distance = sqrt(dx*dx + dy*dy);
         
-        if (distance > 80) { // Very low threshold for easy swiping
-            swipe_handled = 1;
+        // Very loose swipe detection - just 40px movement in any direction
+        if (distance > 40) {
             
-            if (abs(dy) > abs(dx)) {
-                if (dy < 0) { // Swipe up
-                    if (current_state == LOCK_SCREEN) {
+            // SWIPE UP detection with loose rectangular zones
+            if (dy < -20) { // Any upward movement of 20px
+                if (current_state == LOCK_SCREEN) {
+                    // Can swipe up from anywhere on bottom 2/3 of screen
+                    if (touch.start_y > screen_h / 3) {
+                        printf("Swipe up from lock screen detected!\n");
                         current_state = PIN_ENTRY;
-                    } else if (current_state == APP_SCREEN) {
-                        current_state = HOME_SCREEN;
+                        swipe_handled = 1;
+                        touch.action_taken = 1;
                     }
-                } else { // Swipe down
-                    if (current_state == PIN_ENTRY) {
-                        current_state = LOCK_SCREEN;
-                        memset(pin_code, 0, sizeof(pin_code));
-                    }
+                } else if (current_state == APP_SCREEN) {
+                    // Can swipe up from anywhere to go home
+                    printf("Swipe up from app detected!\n");
+                    current_state = HOME_SCREEN;
+                    swipe_handled = 1;
+                    touch.action_taken = 1;
+                }
+            }
+            
+            // SWIPE DOWN detection
+            else if (dy > 20) { // Any downward movement of 20px
+                if (current_state == PIN_ENTRY) {
+                    // Can swipe down from anywhere to go back to lock
+                    printf("Swipe down from PIN entry detected!\n");
+                    current_state = LOCK_SCREEN;
+                    memset(pin_code, 0, sizeof(pin_code));
+                    swipe_handled = 1;
+                    touch.action_taken = 1;
                 }
             }
         }
     }
     
-    // Reset swiping when touch ends
+    // Also check when touch ends (backup detection)
+    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled) {
+        int dx = touch.x - touch.start_x;
+        int dy = touch.y - touch.start_y;
+        int distance = sqrt(dx*dx + dy*dy);
+        
+        if (distance > 30) { // Even more forgiving on release
+            if (dy < -15) { // Swipe up
+                if (current_state == LOCK_SCREEN && touch.start_y > screen_h / 3) {
+                    printf("Swipe up from lock screen detected (on release)!\n");
+                    current_state = PIN_ENTRY;
+                    swipe_handled = 1;
+                } else if (current_state == APP_SCREEN) {
+                    printf("Swipe up from app detected (on release)!\n");
+                    current_state = HOME_SCREEN;
+                    swipe_handled = 1;
+                }
+            } else if (dy > 15 && current_state == PIN_ENTRY) { // Swipe down
+                printf("Swipe down from PIN entry detected (on release)!\n");
+                current_state = LOCK_SCREEN;
+                memset(pin_code, 0, sizeof(pin_code));
+                swipe_handled = 1;
+            }
+        }
+    }
+    
+    // Reset when touch ends
     if (!touch.pressed && touch.last_pressed) {
         touch.is_swiping = 0;
         swipe_handled = 0;
+        touch.action_taken = 0; // Reset for next touch
     }
 }
 
@@ -569,6 +617,10 @@ void read_touch_events() {
                 // Debug: Print touch events
                 if (touch.pressed && !touch.last_pressed) {
                     printf("Touch started at (%d, %d)\n", touch.x, touch.y);
+                    touch.action_taken = 0; // Reset for new touch
+                }
+                if (!touch.pressed && touch.last_pressed) {
+                    printf("Touch ended at (%d, %d)\n", touch.x, touch.y);
                 }
             }
         }
