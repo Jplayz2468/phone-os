@@ -53,11 +53,11 @@ typedef struct {
     int action_taken;
     int is_dragging_indicator;
     int drag_start_y;
-    int indicator_x;
+    int finger_x, finger_y; // Track actual finger position
 } TouchState;
 
 // Global variables
-uint32_t *framebuffer = NULL, *backbuffer = NULL, *home_background = NULL;
+uint32_t *framebuffer = NULL, *backbuffer = NULL, *app_buffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
 TouchDevice touch_devices[16];
 int num_touch_devices = 0;
@@ -222,12 +222,11 @@ void draw_status_bar(uint32_t *buf) {
 }
 
 int is_in_bottom_area(int touch_x, int touch_y) {
-    // Entire bottom 30% of screen is gesture area
     return (touch_y >= screen_h * 0.7f);
 }
 
 float calculate_scale_from_drag(int drag_distance) {
-    if (drag_distance < 20) return 1.0f; // Deadzone
+    if (drag_distance < 20) return 1.0f;
     float max_drag = screen_h * 0.5f;
     float normalized = (drag_distance - 20) / max_drag;
     float scale = 1.0f - normalized * 0.6f;
@@ -236,56 +235,61 @@ float calculate_scale_from_drag(int drag_distance) {
     return scale;
 }
 
-// Simple blur - just like drawing text over circles
-void apply_simple_blur(uint32_t *buf, float blur_amount) {
+// SUPER FAST blur - just darken pixels slightly for depth effect
+void apply_fast_blur(uint32_t *buf, float blur_amount) {
     if (blur_amount < 0.1f) return;
     
-    int blur_radius = (int)(blur_amount * 6.0f);
-    if (blur_radius < 1) return;
+    int darken = (int)(blur_amount * 40); // How much to darken (0-40)
     
-    // Simple box blur - treat it like drawing over existing pixels
-    for (int y = blur_radius; y < screen_h - blur_radius; y++) {
-        for (int x = blur_radius; x < screen_w - blur_radius; x++) {
-            int r = 0, g = 0, b = 0, count = 0;
-            
-            for (int dy = -blur_radius; dy <= blur_radius; dy++) {
-                for (int dx = -blur_radius; dx <= blur_radius; dx++) {
-                    uint32_t pixel = buf[(y + dy) * screen_w + (x + dx)];
-                    r += (pixel >> 16) & 0xFF;
-                    g += (pixel >> 8) & 0xFF;
-                    b += pixel & 0xFF;
-                    count++;
-                }
-            }
-            
-            if (count > 0) {
-                buf[y * screen_w + x] = 0xFF000000 | 
-                    ((r / count) << 16) | ((g / count) << 8) | (b / count);
-            }
-        }
+    // Just darken every pixel - much faster than actual blur
+    for (int i = 0; i < screen_w * screen_h; i++) {
+        uint32_t pixel = buf[i];
+        int r = ((pixel >> 16) & 0xFF);
+        int g = ((pixel >> 8) & 0xFF);
+        int b = (pixel & 0xFF);
+        
+        r = (r > darken) ? r - darken : 0;
+        g = (g > darken) ? g - darken : 0;
+        b = (b > darken) ? b - darken : 0;
+        
+        buf[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 }
 
-// Draw scaled content - just like drawing text over background
-void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int offset_x, int offset_y) {
+// OPTIMIZED scaled window drawing - window follows finger EXACTLY
+void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x, int finger_y) {
     int scaled_w = (int)(screen_w * scale);
     int scaled_h = (int)(screen_h * scale);
-    int start_x = (screen_w - scaled_w) / 2 + offset_x;
-    int start_y = (screen_h - scaled_h) / 2 + offset_y;
     
+    // Window center follows finger position EXACTLY
+    int center_x = finger_x;
+    int center_y = finger_y;
+    
+    // Keep window on screen
+    if (center_x - scaled_w/2 < 0) center_x = scaled_w/2;
+    if (center_x + scaled_w/2 > screen_w) center_x = screen_w - scaled_w/2;
+    if (center_y - scaled_h/2 < 0) center_y = scaled_h/2;
+    if (center_y + scaled_h/2 > screen_h) center_y = screen_h - scaled_h/2;
+    
+    int start_x = center_x - scaled_w/2;
+    int start_y = center_y - scaled_h/2;
+    
+    // Fast scaling with proper bounds checking
     for (int y = 0; y < scaled_h; y++) {
+        int dest_y = start_y + y;
+        if (dest_y < 0 || dest_y >= screen_h) continue;
+        
+        int src_y = (int)(y / scale);
+        if (src_y >= screen_h) continue;
+        
         for (int x = 0; x < scaled_w; x++) {
-            int src_x = (int)(x / scale);
-            int src_y = (int)(y / scale);
+            int dest_x = start_x + x;
+            if (dest_x < 0 || dest_x >= screen_w) continue;
             
-            if (src_x >= 0 && src_x < screen_w && src_y >= 0 && src_y < screen_h) {
-                int dest_x = start_x + x;
-                int dest_y = start_y + y;
-                
-                if (dest_x >= 0 && dest_x < screen_w && dest_y >= 0 && dest_y < screen_h) {
-                    dest[dest_y * screen_w + dest_x] = src[src_y * screen_w + src_x];
-                }
-            }
+            int src_x = (int)(x / scale);
+            if (src_x >= screen_w) continue;
+            
+            dest[dest_y * screen_w + dest_x] = src[src_y * screen_w + src_x];
         }
     }
 }
@@ -325,7 +329,7 @@ void draw_pin_entry(uint32_t *buf) {
         }
     }
     
-    // PIN pad - same principle as drawing text over circles
+    // PIN pad
     char pin_labels[] = "123456789*0#";
     int pad_start_x = screen_w/2 - 240;
     int pad_start_y = STATUS_HEIGHT + 250;
@@ -338,10 +342,8 @@ void draw_pin_entry(uint32_t *buf) {
         int x = pad_start_x + col * 160;
         int y = pad_start_y + row * 160;
         
-        // Draw circle background first
         draw_circle_filled(buf, x + 80, y + 80, 70, COLOR_GRAY);
         
-        // Draw text over the circle - SAME PRINCIPLE!
         char btn_text[2] = {pin_labels[i], 0};
         int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
         draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
@@ -426,10 +428,8 @@ void update_animations() {
             current_scale = target_scale;
             is_animating = 0;
             
-            // Complete state transition when animation finishes
             if (animation_target_state != current_state) {
                 current_state = animation_target_state;
-                // Reset scale to 1.0 when entering new state
                 if (current_state == HOME_SCREEN) {
                     current_scale = 1.0f;
                     target_scale = 1.0f;
@@ -438,55 +438,53 @@ void update_animations() {
                     current_state == HOME_SCREEN ? "Home" : "App");
             }
         } else {
-            current_scale += diff * 0.3f; // Even faster animation (60fps * 0.3 = ~3-4 frames)
+            current_scale += diff * 0.3f;
         }
     }
 }
 
 void handle_touch_input() {
-    // iOS-style home indicator dragging with PROPER LOCKING
-    
     if (touch.pressed && !touch.last_pressed) {
         if (is_in_bottom_area(touch.x, touch.y) && 
             (current_state == HOME_SCREEN || current_state == APP_SCREEN)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
-            touch.indicator_x = touch.x; // Lock to finger immediately
-            printf("🎯 Started dragging - locked to finger\n");
+            touch.finger_x = touch.x; // Track finger position
+            touch.finger_y = touch.y;
+            printf("🎯 Started dragging - finger at (%d, %d)\n", touch.x, touch.y);
             return;
         }
         
-        // Regular swipe detection
         touch.start_x = touch.x;
         touch.start_y = touch.y;
     }
     
-    // Handle indicator drag - LOCK EVERYTHING TO FINGER
+    // Handle indicator drag - WINDOW FOLLOWS FINGER EXACTLY
     if (touch.pressed && touch.is_dragging_indicator) {
         int drag_distance = touch.drag_start_y - touch.y;
         if (drag_distance >= 0) {
             current_scale = calculate_scale_from_drag(drag_distance);
-            touch.indicator_x = touch.x; // Always lock bar to finger
+            // Window follows finger EXACTLY
+            touch.finger_x = touch.x;
+            touch.finger_y = touch.y;
         }
         return;
     }
     
-    // Handle indicator release - PROPER ANIMATION DIRECTION
+    // Handle indicator release
     if (!touch.pressed && touch.last_pressed && touch.is_dragging_indicator) {
         int final_drag = touch.drag_start_y - touch.y;
         float threshold = screen_h * 0.2f;
         
         if (final_drag > threshold) {
-            // Going to home - app should shrink away
-            printf("🏠 App shrinking away → Home\n");
+            printf("🏠 Going to home\n");
             animation_target_state = HOME_SCREEN;
-            target_scale = 0.0f; // Shrink app to nothing
+            target_scale = 0.0f;
             is_animating = 1;
         } else {
-            // Spring back - app should grow back to full size
-            printf("↩️ App growing back to full size\n");
-            animation_target_state = current_state; // Stay in current state
-            target_scale = 1.0f; // Grow back to full
+            printf("↩️ Staying in app\n");
+            animation_target_state = current_state;
+            target_scale = 1.0f;
             is_animating = 1;
         }
         
@@ -641,7 +639,7 @@ void cleanup_and_exit(int sig) {
         munmap(framebuffer, stride * screen_h);
     }
     if (backbuffer) free(backbuffer);
-    if (home_background) free(home_background);
+    if (app_buffer) free(app_buffer);
     if (fb_fd > 0) close(fb_fd);
     for (int i = 0; i < num_touch_devices; i++) {
         close(touch_devices[i].fd);
@@ -686,27 +684,26 @@ int main() {
     backbuffer = malloc(screen_w * screen_h * 4);
     if (!backbuffer) { perror("Backbuffer allocation failed"); exit(1); }
     
-    home_background = malloc(screen_w * screen_h * 4);
-    if (!home_background) { perror("Home background allocation failed"); exit(1); }
+    app_buffer = malloc(screen_w * screen_h * 4);
+    if (!app_buffer) { perror("App buffer allocation failed"); exit(1); }
     
     init_touch_devices();
     
-    // Initialize animation state
     animation_target_state = current_state;
     
-    printf("📱 iOS-Style Phone OS - PERFECTED! 🚀\n");
-    printf("🎯 Bar locks to finger, window locks to bar\n");
-    printf("✨ Proper animation direction - app pops away!\n");
-    printf("⚡ 60fps smooth animations, hidden bar while scaling\n");
+    printf("📱 FIXED iOS Phone OS - 60fps PERFECTED! 🚀\n");
+    printf("🎯 Window follows finger EXACTLY\n");
+    printf("⚡ Super fast blur replacement\n");
+    printf("🔥 Optimized rendering pipeline\n");
     
     while (1) {
         read_touch_events();
         handle_touch_input();
         update_animations();
         
-        // CONSISTENT RENDERING - ALWAYS USE BACKBUFFER FIRST
+        // OPTIMIZED RENDERING PIPELINE
         if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-            // Normal mode - render current screen to backbuffer
+            // Normal mode - direct render
             switch (current_state) {
                 case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
                 case PIN_ENTRY: draw_pin_entry(backbuffer); break;
@@ -714,40 +711,40 @@ int main() {
                 case APP_SCREEN: draw_app_screen(backbuffer); break;
             }
         } else {
-            // Scaling mode - render to backbuffer as background, then overlay
+            // Scaling mode - OPTIMIZED
             
-            // Step 1: Draw home screen as background to backbuffer
+            // 1. Draw home screen as background
             draw_home_screen(backbuffer);
             
-            // Step 2: Apply blur to backbuffer if needed
+            // 2. FAST blur effect (just darken)
             float blur_amount = (1.0f - current_scale) * 0.5f;
             if (blur_amount > 0.1f) {
-                apply_simple_blur(backbuffer, blur_amount);
+                apply_fast_blur(backbuffer, blur_amount);
             }
             
-            // Step 3: Draw current screen to temp buffer
+            // 3. Draw current screen to app buffer
             switch (current_state) {
-                case LOCK_SCREEN: draw_lock_screen(home_background); break;
-                case PIN_ENTRY: draw_pin_entry(home_background); break;
-                case HOME_SCREEN: draw_home_screen(home_background); break;
-                case APP_SCREEN: draw_app_screen(home_background); break;
+                case LOCK_SCREEN: draw_lock_screen(app_buffer); break;
+                case PIN_ENTRY: draw_pin_entry(app_buffer); break;
+                case HOME_SCREEN: draw_home_screen(app_buffer); break;
+                case APP_SCREEN: draw_app_screen(app_buffer); break;
             }
             
-            // Step 4: Draw scaled window over backbuffer - LOCKED TO BAR POSITION
-            int offset_x = 0;
-            if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-                offset_x = (touch.indicator_x - screen_w/2); // Full horizontal tracking
+            // 4. Draw scaled window - FOLLOWS FINGER EXACTLY
+            if (touch.is_dragging_indicator) {
+                draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
+            } else {
+                // Center when animating
+                draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
             }
             
-            draw_scaled_window(backbuffer, home_background, current_scale, offset_x, 0);
-            
-            // Step 5: Draw floating home indicator bar - LOCKED TO FINGER
-            if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-                int bar_w = 240; // Larger when dragging
-                int bar_x = touch.indicator_x - bar_w/2;
+            // 5. Draw floating home indicator bar AT FINGER
+            if (touch.is_dragging_indicator) {
+                int bar_w = 240;
+                int bar_x = touch.finger_x - bar_w/2;
                 int bar_y = screen_h - 80;
                 
-                // Make sure bar stays on screen
+                // Keep bar on screen
                 if (bar_x < 20) bar_x = 20;
                 if (bar_x + bar_w > screen_w - 20) bar_x = screen_w - 20 - bar_w;
                 
@@ -755,12 +752,12 @@ int main() {
             }
         }
         
-        // Debug dot - always draw to backbuffer
+        // Debug dot
         if (touch.pressed) {
             draw_circle_filled(backbuffer, touch.x, touch.y, 8, COLOR_RED);
         }
         
-        // SINGLE CONSISTENT COPY TO FRAMEBUFFER
+        // Single copy to framebuffer
         memcpy(framebuffer, backbuffer, screen_w * screen_h * 4);
         
         usleep(16666); // 60 FPS
