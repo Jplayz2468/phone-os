@@ -222,57 +222,99 @@ void draw_status_bar(uint32_t *buf) {
 }
 
 int is_touching_home_indicator(int touch_x, int touch_y) {
-    int indicator_center_x = screen_w / 2;
-    int indicator_y = screen_h - 80;
-    int hitbox_w = 200, hitbox_h = 60;
-    
-    return (touch_x >= indicator_center_x - hitbox_w/2 && 
-            touch_x <= indicator_center_x + hitbox_w/2 &&
-            touch_y >= indicator_y - hitbox_h/2 && 
-            touch_y <= indicator_y + hitbox_h/2);
+    // Entire bottom 25% of screen is the hitbox
+    int bottom_zone_height = screen_h / 4;
+    return (touch_y >= screen_h - bottom_zone_height);
 }
 
 float calculate_scale_from_drag(int drag_distance) {
+    // Smoother scaling with deadzone to prevent flickering
+    if (drag_distance < 10) return 1.0f; // Small deadzone
+    
     float max_drag = screen_h * 0.6f;
-    float scale_factor = 1.0f - (drag_distance / max_drag) * 0.7f;
+    float normalized = (drag_distance - 10) / max_drag; // Account for deadzone
+    float scale_factor = 1.0f - normalized * 0.7f;
+    
     if (scale_factor < 0.3f) scale_factor = 0.3f;
     if (scale_factor > 1.0f) scale_factor = 1.0f;
     return scale_factor;
 }
 
-void simple_blur(uint32_t *src, uint32_t *dest, int blur_radius) {
-    if (blur_radius <= 0) {
+void gaussian_blur(uint32_t *src, uint32_t *dest, float blur_strength) {
+    if (blur_strength <= 0.1f) {
         memcpy(dest, src, screen_w * screen_h * 4);
         return;
     }
     
+    // Create temporary buffer for horizontal pass
+    uint32_t *temp = malloc(screen_w * screen_h * 4);
+    
+    // Calculate blur radius based on strength
+    int radius = (int)(blur_strength * 12.0f);
+    if (radius < 1) radius = 1;
+    if (radius > 20) radius = 20;
+    
+    // Gaussian weights (approximated)
+    float weights[21];
+    float total_weight = 0.0f;
+    for (int i = 0; i <= radius; i++) {
+        float x = (float)i / (radius * 0.4f);
+        weights[i] = exp(-0.5f * x * x);
+        total_weight += (i == 0) ? weights[i] : 2.0f * weights[i];
+    }
+    
+    // Normalize weights
+    for (int i = 0; i <= radius; i++) {
+        weights[i] /= total_weight;
+    }
+    
+    // Horizontal pass
     for (int y = 0; y < screen_h; y++) {
         for (int x = 0; x < screen_w; x++) {
-            int r_sum = 0, g_sum = 0, b_sum = 0, count = 0;
+            float r = 0, g = 0, b = 0;
             
-            for (int by = -blur_radius; by <= blur_radius; by++) {
-                for (int bx = -blur_radius; bx <= blur_radius; bx++) {
-                    int nx = x + bx, ny = y + by;
-                    if (nx >= 0 && nx < screen_w && ny >= 0 && ny < screen_h) {
-                        uint32_t pixel = src[ny * screen_w + nx];
-                        r_sum += (pixel >> 16) & 0xFF;
-                        g_sum += (pixel >> 8) & 0xFF;
-                        b_sum += pixel & 0xFF;
-                        count++;
-                    }
-                }
+            for (int i = -radius; i <= radius; i++) {
+                int sx = x + i;
+                if (sx < 0) sx = 0;
+                if (sx >= screen_w) sx = screen_w - 1;
+                
+                uint32_t pixel = src[y * screen_w + sx];
+                float weight = weights[abs(i)];
+                
+                r += weight * ((pixel >> 16) & 0xFF);
+                g += weight * ((pixel >> 8) & 0xFF);
+                b += weight * (pixel & 0xFF);
             }
             
-            if (count > 0) {
-                dest[y * screen_w + x] = 0xFF000000 | 
-                    ((r_sum / count) << 16) | 
-                    ((g_sum / count) << 8) | 
-                    (b_sum / count);
-            } else {
-                dest[y * screen_w + x] = src[y * screen_w + x];
-            }
+            temp[y * screen_w + x] = 0xFF000000 | 
+                ((int)r << 16) | ((int)g << 8) | (int)b;
         }
     }
+    
+    // Vertical pass
+    for (int y = 0; y < screen_h; y++) {
+        for (int x = 0; x < screen_w; x++) {
+            float r = 0, g = 0, b = 0;
+            
+            for (int i = -radius; i <= radius; i++) {
+                int sy = y + i;
+                if (sy < 0) sy = 0;
+                if (sy >= screen_h) sy = screen_h - 1;
+                
+                uint32_t pixel = temp[sy * screen_w + x];
+                float weight = weights[abs(i)];
+                
+                r += weight * ((pixel >> 16) & 0xFF);
+                g += weight * ((pixel >> 8) & 0xFF);
+                b += weight * (pixel & 0xFF);
+            }
+            
+            dest[y * screen_w + x] = 0xFF000000 | 
+                ((int)r << 16) | ((int)g << 8) | (int)b;
+        }
+    }
+    
+    free(temp);
 }
 
 void draw_scaled_content(uint32_t *dest, uint32_t *src, float scale, int offset_x, int offset_y) {
@@ -446,6 +488,7 @@ void update_animations() {
 }
 
 void render_final_frame(uint32_t *output_buf) {
+    // Always render current screen to backbuffer first
     switch (current_state) {
         case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
         case PIN_ENTRY: draw_pin_entry(backbuffer); break;
@@ -453,30 +496,35 @@ void render_final_frame(uint32_t *output_buf) {
         case APP_SCREEN: draw_app_screen(backbuffer); break;
     }
     
+    // If not scaling, just copy to output
     if (current_scale >= 0.99f && !touch.is_dragging_indicator) {
         memcpy(output_buf, backbuffer, screen_w * screen_h * 4);
-        return;
-    }
-    
-    draw_home_screen(home_buffer);
-    
-    int blur_radius = (int)((1.0f - current_scale) * 8.0f);
-    if (blur_radius > 0) {
-        simple_blur(home_buffer, output_buf, blur_radius);
     } else {
-        memcpy(output_buf, home_buffer, screen_w * screen_h * 4);
-    }
-    
-    if (current_scale < 0.99f) {
-        int indicator_offset_x = 0;
-        if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-            indicator_offset_x = touch.indicator_x - screen_w/2;
+        // We're scaling - render live home screen as background
+        draw_home_screen(output_buf); // Render directly to output
+        
+        // Apply blur based on how much we're scaling
+        // Less scaling (smaller window) = less blur (closer to home access)
+        float blur_strength = (1.0f - current_scale) * 0.8f; // Max 0.8 strength
+        
+        if (blur_strength > 0.1f) {
+            // Blur the background in-place
+            gaussian_blur(output_buf, home_buffer, blur_strength);
+            memcpy(output_buf, home_buffer, screen_w * screen_h * 4);
         }
         
-        draw_scaled_content(output_buf, backbuffer, current_scale, indicator_offset_x, 0);
+        // Draw scaled current screen on top of blurred background
+        if (current_scale < 0.99f) {
+            int indicator_offset_x = 0;
+            if (touch.is_dragging_indicator && touch.indicator_x > 0) {
+                indicator_offset_x = touch.indicator_x - screen_w/2;
+            }
+            
+            draw_scaled_content(output_buf, backbuffer, current_scale, indicator_offset_x, 0);
+        }
     }
     
-    // Debug dot
+    // Debug dot on final output
     if (touch.pressed) {
         for (int y = -10; y <= 10; y++) {
             for (int x = -10; x <= 10; x++) {
@@ -492,14 +540,14 @@ void render_final_frame(uint32_t *output_buf) {
 }
 
 void handle_touch_input() {
-    // Home indicator dragging
+    // Home indicator dragging with improved smoothness
     if (touch.pressed && !touch.last_pressed) {
         if (is_touching_home_indicator(touch.x, touch.y) && 
             (current_state == HOME_SCREEN || current_state == APP_SCREEN)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
             touch.indicator_x = touch.x;
-            printf("Home indicator drag started at (%d, %d)\n", touch.x, touch.y);
+            printf("Home indicator drag started (entire bottom area active)\n");
             return;
         }
         
@@ -519,12 +567,23 @@ void handle_touch_input() {
         }
     }
     
-    // Ongoing indicator drag
+    // Ongoing indicator drag with smoothing
     if (touch.pressed && touch.is_dragging_indicator) {
         int drag_distance = touch.drag_start_y - touch.y;
-        if (drag_distance > 0) {
-            current_scale = calculate_scale_from_drag(drag_distance);
-            touch.indicator_x = touch.x;
+        if (drag_distance >= 0) { // Only drag upward
+            float new_scale = calculate_scale_from_drag(drag_distance);
+            
+            // Smooth scale changes to reduce flickering
+            float scale_diff = fabs(new_scale - current_scale);
+            if (scale_diff > 0.01f) { // Only update if significant change
+                current_scale = new_scale;
+                touch.indicator_x = touch.x; // Follow finger horizontally
+                
+                // Only log every 20px of movement to reduce spam
+                if (drag_distance % 20 == 0) {
+                    printf("Smooth drag: distance=%d, scale=%.2f\n", drag_distance, current_scale);
+                }
+            }
         }
         return;
     }
@@ -532,13 +591,17 @@ void handle_touch_input() {
     // Indicator drag release
     if (!touch.pressed && touch.last_pressed && touch.is_dragging_indicator) {
         int final_drag = touch.drag_start_y - touch.y;
-        float threshold = screen_h * 0.3f;
+        float threshold = screen_h * 0.25f; // Reduced threshold to 25%
+        
+        printf("Released: drag=%d, threshold=%.0f\n", final_drag, threshold);
         
         if (final_drag > threshold) {
+            printf("Going to home screen!\n");
             current_state = HOME_SCREEN;
             target_scale = 1.0f;
             is_animating = 1;
         } else {
+            printf("Springing back to app!\n");
             target_scale = 1.0f;
             is_animating = 1;
         }
@@ -547,7 +610,7 @@ void handle_touch_input() {
         return;
     }
     
-    // Regular button handling
+    // Regular button handling (unchanged)
     if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
     
     if (current_state == PIN_ENTRY) {
@@ -603,6 +666,7 @@ void handle_touch_input() {
                 touch.action_taken = 1;
                 current_app = i;
                 current_state = APP_SCREEN;
+                printf("Launched app: %s\n", apps[i].name);
                 return;
             }
         }
@@ -732,7 +796,8 @@ int main() {
     
     init_touch_devices();
     
-    printf("Phone OS started - touch the home indicator to drag!\n");
+    printf("Phone OS started - entire bottom area is home indicator!\n");
+    printf("Features: Gaussian blur, smooth scaling, no flickering\n");
     while (1) {
         read_touch_events();
         handle_touch_input();
