@@ -199,10 +199,10 @@ void get_current_time(char *time_str, char *date_str) {
 void draw_status_bar(uint32_t *buf) {
     char time_str[32];
     get_current_time(time_str, NULL);
-    draw_text_centered(buf, time_str, MEDIUM_TEXT, 40, COLOR_WHITE);
+    draw_text_centered(buf, time_str, MEDIUM_TEXT, 30, COLOR_WHITE);
     
     // Battery indicator
-    int bat_x = screen_w - 200, bat_y = 40;
+    int bat_x = screen_w - 200, bat_y = 30;
     int bat_w = 80, bat_h = 40;
     
     // Battery outline
@@ -222,12 +222,12 @@ void draw_status_bar(uint32_t *buf) {
     // Battery percentage
     char bat_text[8];
     snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
-    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 8, COLOR_WHITE);
+    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y, COLOR_WHITE);
     
     // WiFi indicator
     for (int i = 0; i < 4; i++) {
         int bar_h = 12 + i * 8;
-        draw_rect(buf, 80 + i * 20, 60 - bar_h/2, 12, bar_h, COLOR_WHITE);
+        draw_rect(buf, 80 + i * 20, 50 - bar_h/2, 12, bar_h, COLOR_WHITE);
     }
 }
 
@@ -301,11 +301,11 @@ void draw_home_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    // App grid (4x3)
+    // App grid (4x3) - increased spacing from status bar
     int apps_per_row = 3;
     int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
     int start_x = (screen_w - grid_width) / 2;
-    int start_y = STATUS_HEIGHT + 100;
+    int start_y = STATUS_HEIGHT + 150; // Increased spacing
     
     for (int i = 0; i < APP_COUNT && i < 12; i++) {
         int row = i / apps_per_row;
@@ -376,15 +376,9 @@ int point_in_rect(int px, int py, int x, int y, int w, int h) {
 }
 
 void handle_touch_input() {
-    uint64_t now = get_time_ms();
-    
-    if (!touch.pressed || (now - touch.last_touch_time) < DEBOUNCE_MS) {
-        touch.touch_registered = 0;
-        return;
-    }
-    
-    if (touch.touch_registered) return;
-    touch.touch_registered = 1;
+    // Detect tap (just pressed)
+    int just_pressed = touch.pressed && !touch.last_pressed;
+    if (!just_pressed) return;
     
     if (current_state == PIN_ENTRY) {
         // Handle PIN pad
@@ -420,7 +414,7 @@ void handle_touch_input() {
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
-        int start_y = STATUS_HEIGHT + 100;
+        int start_y = STATUS_HEIGHT + 150; // Match the drawing position
         
         for (int i = 0; i < APP_COUNT && i < 12; i++) {
             int row = i / apps_per_row;
