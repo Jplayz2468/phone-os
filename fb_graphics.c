@@ -61,8 +61,11 @@ typedef struct {
     int x, y, pressed, last_pressed;
     int start_x, start_y, is_swiping;
     uint64_t last_touch_time;
-    int action_taken; // Prevent double-clicks
-} Touch;
+    int action_taken;
+    int is_dragging_indicator;
+    int drag_start_y;
+    int indicator_x;
+} TouchState;
 
 // Global variables
 uint32_t *framebuffer = NULL, *backbuffer = NULL;
@@ -187,6 +190,87 @@ void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, u
     int text_width = measure_text_width(text, font_size);
     int x = (screen_w - text_width) / 2;
     draw_text(buf, text, font_size, x, y, color);
+}
+
+int is_touching_home_indicator(int touch_x, int touch_y) {
+    // Always-enlarged hitbox for home indicator
+    int indicator_center_x = screen_w / 2;
+    int indicator_y = screen_h - 80;
+    int hitbox_w = 200, hitbox_h = 60;
+    
+    return (touch_x >= indicator_center_x - hitbox_w/2 && 
+            touch_x <= indicator_center_x + hitbox_w/2 &&
+            touch_y >= indicator_y - hitbox_h/2 && 
+            touch_y <= indicator_y + hitbox_h/2);
+}
+
+float calculate_scale_from_drag(int drag_distance) {
+    // Convert drag distance to scale (1.0 = full size, 0.3 = very small)
+    float max_drag = screen_h * 0.6f; // 60% of screen height
+    float scale_factor = 1.0f - (drag_distance / max_drag) * 0.7f;
+    if (scale_factor < 0.3f) scale_factor = 0.3f;
+    if (scale_factor > 1.0f) scale_factor = 1.0f;
+    return scale_factor;
+}
+
+void simple_blur(uint32_t *src, uint32_t *dest, int blur_radius) {
+    // Simple box blur implementation
+    if (blur_radius <= 0) {
+        memcpy(dest, src, screen_w * screen_h * 4);
+        return;
+    }
+    
+    for (int y = 0; y < screen_h; y++) {
+        for (int x = 0; x < screen_w; x++) {
+            int r_sum = 0, g_sum = 0, b_sum = 0, count = 0;
+            
+            for (int by = -blur_radius; by <= blur_radius; by++) {
+                for (int bx = -blur_radius; bx <= blur_radius; bx++) {
+                    int nx = x + bx, ny = y + by;
+                    if (nx >= 0 && nx < screen_w && ny >= 0 && ny < screen_h) {
+                        uint32_t pixel = src[ny * screen_w + nx];
+                        r_sum += (pixel >> 16) & 0xFF;
+                        g_sum += (pixel >> 8) & 0xFF;
+                        b_sum += pixel & 0xFF;
+                        count++;
+                    }
+                }
+            }
+            
+            if (count > 0) {
+                dest[y * screen_w + x] = 0xFF000000 | 
+                    ((r_sum / count) << 16) | 
+                    ((g_sum / count) << 8) | 
+                    (b_sum / count);
+            } else {
+                dest[y * screen_w + x] = src[y * screen_w + x];
+            }
+        }
+    }
+}
+
+void draw_scaled_content(uint32_t *dest, uint32_t *src, float scale, int offset_x, int offset_y) {
+    // Draw scaled content centered on screen
+    int scaled_w = (int)(screen_w * scale);
+    int scaled_h = (int)(screen_h * scale);
+    int start_x = (screen_w - scaled_w) / 2 + offset_x;
+    int start_y = (screen_h - scaled_h) / 2 + offset_y;
+    
+    for (int y = 0; y < scaled_h; y++) {
+        for (int x = 0; x < scaled_w; x++) {
+            int src_x = (int)(x / scale);
+            int src_y = (int)(y / scale);
+            
+            if (src_x >= 0 && src_x < screen_w && src_y >= 0 && src_y < screen_h) {
+                int dest_x = start_x + x;
+                int dest_y = start_y + y;
+                
+                if (dest_x >= 0 && dest_x < screen_w && dest_y >= 0 && dest_y < screen_h) {
+                    dest[dest_y * screen_w + dest_x] = src[src_y * screen_w + src_x];
+                }
+            }
+        }
+    }
 }
 
 void get_current_time(char *time_str, char *date_str) {
@@ -323,8 +407,19 @@ void draw_home_screen(uint32_t *buf) {
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
     }
     
-    // Home indicator
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    // Home indicator with visual feedback when being dragged
+    int indicator_bar_w = touch.is_dragging_indicator ? 240 : 160; // Wider when dragging
+    uint32_t indicator_color = touch.is_dragging_indicator ? COLOR_BLUE : COLOR_WHITE;
+    
+    if (touch.is_dragging_indicator && touch.indicator_x > 0) {
+        // Follow finger position
+        draw_rounded_rect(buf, touch.indicator_x - indicator_bar_w/2, screen_h - 80, 
+                         indicator_bar_w, 8, 4, indicator_color);
+    } else {
+        // Normal position
+        draw_rounded_rect(buf, screen_w/2 - indicator_bar_w/2, screen_h - 80, 
+                         indicator_bar_w, 8, 4, indicator_color);
+    }
 }
 
 void draw_app_screen(uint32_t *buf) {
@@ -630,6 +725,7 @@ void read_touch_events() {
                 }
                 if (!touch.pressed && touch.last_pressed) {
                     printf("Touch ended at (%d, %d)\n", touch.x, touch.y);
+                    touch.action_taken = 0; // Reset when touch ends
                 }
             }
         }
@@ -642,6 +738,7 @@ void cleanup_and_exit(int sig) {
         munmap(framebuffer, stride * screen_h);
     }
     if (backbuffer) free(backbuffer);
+    if (home_buffer) free(home_buffer);
     if (fb_fd > 0) close(fb_fd);
     for (int i = 0; i < num_touch_devices; i++) {
         close(touch_devices[i].fd);
@@ -686,39 +783,20 @@ int main() {
     backbuffer = malloc(screen_w * screen_h * 4);
     if (!backbuffer) { perror("Backbuffer allocation failed"); exit(1); }
     
+    home_buffer = malloc(screen_w * screen_h * 4);
+    if (!home_buffer) { perror("Home buffer allocation failed"); exit(1); }
+    
     init_touch_devices();
     
     // Main loop
-    printf("Phone OS started - touch anywhere!\n");
+    printf("Phone OS started - touch the home indicator to drag!\n");
     while (1) {
         read_touch_events();
         handle_touch_input();
-        handle_gestures();
+        update_animations();
         
-        // Render current state
-        switch (current_state) {
-            case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
-            case PIN_ENTRY: draw_pin_entry(backbuffer); break;
-            case HOME_SCREEN: draw_home_screen(backbuffer); break;
-            case APP_SCREEN: draw_app_screen(backbuffer); break;
-        }
-        
-        // Show touch position for debugging (red dot)
-        if (touch.pressed) {
-            for (int y = -10; y <= 10; y++) {
-                for (int x = -10; x <= 10; x++) {
-                    if (x*x + y*y <= 100) {
-                        int px = touch.x + x, py = touch.y + y;
-                        if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
-                            backbuffer[py * screen_w + px] = COLOR_RED;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Copy to framebuffer
-        memcpy(framebuffer, backbuffer, screen_w * screen_h * 4);
+        // Render final frame with scaling and blur effects
+        render_final_frame(framebuffer);
         
         usleep(16666); // 60 FPS
     }
