@@ -19,86 +19,99 @@
 #define COLOR_BG 0xFF000000
 #define COLOR_WHITE 0xFFFFFFFF
 #define COLOR_GRAY 0xFF666666
+#define COLOR_LIGHT_GRAY 0xFFAAAAAA
 #define COLOR_BLUE 0xFF007AFF
 #define COLOR_GREEN 0xFF34C759
 #define COLOR_RED 0xFFFF3B30
 #define COLOR_ORANGE 0xFFFF9500
 #define COLOR_PURPLE 0xFFAF52DE
-#define FONT_HEIGHT 48.0f
-#define MAX_TOUCH_DEVICES 32
-#define PIN_LENGTH 4
+#define COLOR_YELLOW 0xFFFFCC02
 
-typedef enum { STATE_LOCK, STATE_HOME, STATE_APP } AppState;
+// UI scaling for 1080p (assuming ~1080x1920)
+#define STATUS_HEIGHT 120
+#define LARGE_TEXT 96
+#define MEDIUM_TEXT 64
+#define SMALL_TEXT 48
+#define ICON_SIZE 200
+#define BUTTON_SIZE 160
+#define MARGIN 60
+#define TOUCH_THRESHOLD 50
+#define DEBOUNCE_MS 100
+
+typedef enum { LOCK_SCREEN, PIN_ENTRY, HOME_SCREEN, APP_SCREEN } State;
 
 typedef struct {
-    int x, y, w, h;
-    char *text;
-    uint32_t color;
-    int id;
-} Button;
+    int x, y, w, h, id;
+    char text[32];
+    uint32_t bg_color, text_color;
+    int visible;
+} UIElement;
 
 typedef struct {
-    char *name;
+    char name[32];
     uint32_t color;
     int id;
 } App;
 
 typedef struct {
     int fd, min_x, max_x, min_y, max_y;
-} TouchDev;
+} TouchDevice;
 
 typedef struct {
-    int x, y, pressed, last_pressed, just_pressed;
-    int swipe_start_x, swipe_start_y, swiping;
-} TouchState;
+    int x, y, pressed, last_pressed;
+    int start_x, start_y, is_swiping;
+    uint64_t last_touch_time;
+    int touch_registered;
+} Touch;
 
-uint32_t *fbp = NULL, *backbuffer = NULL;
+// Global variables
+uint32_t *framebuffer = NULL, *backbuffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
-TouchDev touch_devs[MAX_TOUCH_DEVICES];
-int num_touch = 0;
-TouchState touch = {0};
-AppState current_state = STATE_LOCK;
-char pin_input[PIN_LENGTH + 1] = {0};
-int current_app = -1;
-int pin_entry_visible = 0;
-int battery_percent = 87;
+TouchDevice touch_devices[16];
+int num_touch_devices = 0;
+Touch touch = {0};
+State current_state = LOCK_SCREEN;
+char pin_code[5] = {0};
+int current_app_id = -1;
+int battery_level = 87;
 stbtt_fontinfo font;
-float scale;
 
+// Apps configuration
 App apps[] = {
     {"Phone", COLOR_GREEN, 0}, {"Messages", COLOR_GREEN, 1}, {"Camera", COLOR_GRAY, 2},
-    {"Photos", COLOR_BLUE, 3}, {"Settings", COLOR_GRAY, 4}, {"Calculator", COLOR_ORANGE, 5},
-    {"Clock", COLOR_PURPLE, 6}, {"Weather", COLOR_BLUE, 7}, {"Maps", COLOR_GREEN, 8}
+    {"Photos", COLOR_BLUE, 3}, {"Settings", COLOR_LIGHT_GRAY, 4}, {"Calculator", COLOR_ORANGE, 5},
+    {"Clock", COLOR_PURPLE, 6}, {"Weather", COLOR_BLUE, 7}, {"Maps", COLOR_GREEN, 8},
+    {"Music", COLOR_RED, 9}, {"Mail", COLOR_BLUE, 10}, {"Safari", COLOR_BLUE, 11}
 };
-#define NUM_APPS (sizeof(apps)/sizeof(apps[0]))
+#define APP_COUNT (sizeof(apps)/sizeof(apps[0]))
 
-Button pin_buttons[] = {
-    {0,0,120,120,"1",COLOR_WHITE,1}, {0,0,120,120,"2",COLOR_WHITE,2}, {0,0,120,120,"3",COLOR_WHITE,3},
-    {0,0,120,120,"4",COLOR_WHITE,4}, {0,0,120,120,"5",COLOR_WHITE,5}, {0,0,120,120,"6",COLOR_WHITE,6},
-    {0,0,120,120,"7",COLOR_WHITE,7}, {0,0,120,120,"8",COLOR_WHITE,8}, {0,0,120,120,"9",COLOR_WHITE,9},
-    {0,0,120,120,"0",COLOR_WHITE,0}
-};
-#define NUM_PIN_BUTTONS (sizeof(pin_buttons)/sizeof(pin_buttons[0]))
+uint64_t get_time_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+}
 
-void clear(uint32_t *buf, uint32_t color) {
+void clear_screen(uint32_t *buf, uint32_t color) {
     for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
 }
 
 void draw_rect(uint32_t *buf, int x, int y, int w, int h, uint32_t color) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > screen_w) w = screen_w - x;
+    if (y + h > screen_h) h = screen_h - y;
+    
     for (int dy = 0; dy < h; dy++) {
         for (int dx = 0; dx < w; dx++) {
-            int px = x + dx, py = y + dy;
-            if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
-                buf[py * screen_w + px] = color;
-            }
+            buf[(y + dy) * screen_w + (x + dx)] = color;
         }
     }
 }
 
-void draw_circle(uint32_t *buf, int cx, int cy, int r, uint32_t color) {
-    for (int y = -r; y <= r; y++) {
-        for (int x = -r; x <= r; x++) {
-            if (x*x + y*y <= r*r) {
+void draw_circle_filled(uint32_t *buf, int cx, int cy, int radius, uint32_t color) {
+    for (int y = -radius; y <= radius; y++) {
+        for (int x = -radius; x <= radius; x++) {
+            if (x*x + y*y <= radius*radius) {
                 int px = cx + x, py = cy + y;
                 if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
                     buf[py * screen_w + px] = color;
@@ -108,256 +121,316 @@ void draw_circle(uint32_t *buf, int cx, int cy, int r, uint32_t color) {
     }
 }
 
-void draw_text(uint32_t *buf, const char *text, float text_scale, int x, int y, uint32_t color) {
-    int ascent;
-    stbtt_GetFontVMetrics(&font, &ascent, NULL, NULL);
-    int baseline = (int)(ascent * text_scale);
-    int px = x;
+void draw_rounded_rect(uint32_t *buf, int x, int y, int w, int h, int radius, uint32_t color) {
+    // Main rectangles
+    draw_rect(buf, x + radius, y, w - 2*radius, h, color);
+    draw_rect(buf, x, y + radius, w, h - 2*radius, color);
     
-    for (const char *p = text; *p; p++) {
-        int ax;
-        stbtt_GetCodepointHMetrics(&font, *p, &ax, NULL);
-        int c_x1, c_y1, c_x2, c_y2;
-        stbtt_GetCodepointBitmapBox(&font, *p, text_scale, text_scale, &c_x1, &c_y1, &c_x2, &c_y2);
-        int w = c_x2 - c_x1, h = c_y2 - c_y1;
-        if (w <= 0 || h <= 0) { px += (int)(ax * text_scale); continue; }
-        
-        unsigned char *bitmap = malloc(w * h);
-        stbtt_MakeCodepointBitmap(&font, bitmap, w, h, w, text_scale, text_scale, *p);
-        
-        for (int row = 0; row < h; row++) {
-            for (int col = 0; col < w; col++) {
-                int a = bitmap[row * w + col];
-                if (a > 0) {
-                    int dx = px + c_x1 + col, dy = y + baseline + c_y1 + row;
-                    if (dx >= 0 && dx < screen_w && dy >= 0 && dy < screen_h) {
-                        buf[dy * screen_w + dx] = color;
-                    }
-                }
-            }
-        }
-        free(bitmap);
-        px += (int)(ax * text_scale);
-    }
+    // Corner circles
+    draw_circle_filled(buf, x + radius, y + radius, radius, color);
+    draw_circle_filled(buf, x + w - radius, y + radius, radius, color);
+    draw_circle_filled(buf, x + radius, y + h - radius, radius, color);
+    draw_circle_filled(buf, x + w - radius, y + h - radius, radius, color);
 }
 
-int text_width(const char *text, float text_scale) {
+int measure_text_width(const char *text, int font_size) {
+    float scale = stbtt_ScaleForPixelHeight(&font, font_size);
     int width = 0;
     for (const char *p = text; *p; p++) {
-        int ax;
-        stbtt_GetCodepointHMetrics(&font, *p, &ax, NULL);
-        width += (int)(ax * text_scale);
+        int advance;
+        stbtt_GetCodepointHMetrics(&font, *p, &advance, NULL);
+        width += (int)(advance * scale);
     }
     return width;
 }
 
-void draw_button(uint32_t *buf, Button *btn) {
-    draw_circle(buf, btn->x + btn->w/2, btn->y + btn->h/2, btn->w/2, 0xFF333333);
-    int tw = text_width(btn->text, scale);
-    draw_text(buf, btn->text, scale, btn->x + (btn->w - tw)/2, btn->y + btn->h/2 - 16, btn->color);
-}
-
-void draw_app_icon(uint32_t *buf, App *app, int x, int y, int size) {
-    int radius = size/6;
-    // Draw rounded rect background
-    draw_rect(buf, x + radius, y, size - 2*radius, size, app->color);
-    draw_rect(buf, x, y + radius, size, size - 2*radius, app->color);
-    draw_circle(buf, x + radius, y + radius, radius, app->color);
-    draw_circle(buf, x + size - radius, y + radius, radius, app->color);
-    draw_circle(buf, x + radius, y + size - radius, radius, app->color);
-    draw_circle(buf, x + size - radius, y + size - radius, radius, app->color);
+void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uint32_t color) {
+    float scale = stbtt_ScaleForPixelHeight(&font, font_size);
+    int ascent, descent, line_gap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
+    int baseline = y + (int)(ascent * scale);
     
-    int tw = text_width(app->name, scale * 0.6f);
-    draw_text(buf, app->name, scale * 0.6f, x + (size - tw)/2, y + size/2 - 12, COLOR_WHITE);
+    int pos_x = x;
+    for (const char *p = text; *p; p++) {
+        int advance, left_bearing;
+        stbtt_GetCodepointHMetrics(&font, *p, &advance, &left_bearing);
+        
+        int c_x1, c_y1, c_x2, c_y2;
+        stbtt_GetCodepointBitmapBox(&font, *p, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
+        
+        int bitmap_w = c_x2 - c_x1;
+        int bitmap_h = c_y2 - c_y1;
+        
+        if (bitmap_w > 0 && bitmap_h > 0) {
+            unsigned char *bitmap = malloc(bitmap_w * bitmap_h);
+            stbtt_MakeCodepointBitmap(&font, bitmap, bitmap_w, bitmap_h, bitmap_w, scale, scale, *p);
+            
+            for (int row = 0; row < bitmap_h; row++) {
+                for (int col = 0; col < bitmap_w; col++) {
+                    unsigned char alpha = bitmap[row * bitmap_w + col];
+                    if (alpha > 128) {
+                        int px = pos_x + c_x1 + col;
+                        int py = baseline + c_y1 + row;
+                        if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
+                            buf[py * screen_w + px] = color;
+                        }
+                    }
+                }
+            }
+            free(bitmap);
+        }
+        pos_x += (int)(advance * scale);
+    }
 }
 
-void get_time_str(char *buf) {
+void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, uint32_t color) {
+    int text_width = measure_text_width(text, font_size);
+    int x = (screen_w - text_width) / 2;
+    draw_text(buf, text, font_size, x, y, color);
+}
+
+void get_current_time(char *time_str, char *date_str) {
     time_t now = time(NULL);
     struct tm *tm = localtime(&now);
-    strftime(buf, 16, "%H:%M", tm);
+    strftime(time_str, 32, "%H:%M", tm);
+    strftime(date_str, 64, "%A, %B %d", tm);
 }
 
 void draw_status_bar(uint32_t *buf) {
-    char time_str[16];
-    get_time_str(time_str);
-    int tw = text_width(time_str, scale * 0.8f);
-    draw_text(buf, time_str, scale * 0.8f, (screen_w - tw)/2, 50, COLOR_WHITE);
+    char time_str[32];
+    get_current_time(time_str, NULL);
+    draw_text_centered(buf, time_str, MEDIUM_TEXT, 40, COLOR_WHITE);
     
-    // Battery icon with fill based on percentage
-    int bat_w = 50, bat_h = 25;
-    int bat_x = screen_w - 80, bat_y = 35;
+    // Battery indicator
+    int bat_x = screen_w - 200, bat_y = 40;
+    int bat_w = 80, bat_h = 40;
     
     // Battery outline
-    draw_rect(buf, bat_x, bat_y, bat_w, bat_h, COLOR_WHITE);
-    draw_rect(buf, bat_x + 2, bat_y + 2, bat_w - 4, bat_h - 4, COLOR_BG);
+    draw_rounded_rect(buf, bat_x, bat_y, bat_w, bat_h, 8, COLOR_WHITE);
+    draw_rounded_rect(buf, bat_x + 3, bat_y + 3, bat_w - 6, bat_h - 6, 5, COLOR_BG);
     
     // Battery tip
-    draw_rect(buf, bat_x + bat_w, bat_y + 8, 6, 9, COLOR_WHITE);
+    draw_rounded_rect(buf, bat_x + bat_w, bat_y + 12, 8, 16, 4, COLOR_WHITE);
     
-    // Battery fill based on percentage
-    int fill_w = (int)((bat_w - 4) * battery_percent / 100.0f);
-    uint32_t fill_color = battery_percent > 20 ? COLOR_GREEN : COLOR_RED;
-    if (fill_w > 0) {
-        draw_rect(buf, bat_x + 2, bat_y + 2, fill_w, bat_h - 4, fill_color);
+    // Battery fill
+    int fill_width = (int)((bat_w - 6) * battery_level / 100.0f);
+    uint32_t fill_color = battery_level > 20 ? COLOR_GREEN : COLOR_RED;
+    if (fill_width > 0) {
+        draw_rounded_rect(buf, bat_x + 3, bat_y + 3, fill_width, bat_h - 6, 5, fill_color);
     }
     
-    // Battery percentage text
+    // Battery percentage
     char bat_text[8];
-    snprintf(bat_text, sizeof(bat_text), "%d%%", battery_percent);
-    draw_text(buf, bat_text, scale * 0.5f, screen_w - 140, 45, COLOR_WHITE);
+    snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
+    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 8, COLOR_WHITE);
     
-    // WiFi icon (bigger)
+    // WiFi indicator
     for (int i = 0; i < 4; i++) {
-        draw_rect(buf, 30 + i*10, 50 - i*4, 6, 8 + i*4, COLOR_WHITE);
+        int bar_h = 12 + i * 8;
+        draw_rect(buf, 80 + i * 20, 60 - bar_h/2, 12, bar_h, COLOR_WHITE);
     }
 }
 
 void draw_lock_screen(uint32_t *buf) {
-    clear(buf, COLOR_BG);
+    clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
+    char time_str[32], date_str[64];
+    get_current_time(time_str, date_str);
+    
     // Large time display
-    char time_str[16];
-    get_time_str(time_str);
-    int tw = text_width(time_str, scale * 3.0f);
-    draw_text(buf, time_str, scale * 3.0f, (screen_w - tw)/2, screen_h/2 - 150, COLOR_WHITE);
+    draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 200, COLOR_WHITE);
     
     // Date display
-    char date_str[32];
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    strftime(date_str, sizeof(date_str), "%A, %B %d", tm);
-    int dw = text_width(date_str, scale * 1.0f);
-    draw_text(buf, date_str, scale * 1.0f, (screen_w - dw)/2, screen_h/2 - 80, COLOR_GRAY);
+    draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 80, COLOR_LIGHT_GRAY);
     
-    if (!pin_entry_visible) {
-        // Show swipe up hint
-        int tw_swipe = text_width("Swipe up to unlock", scale * 0.7f);
-        draw_text(buf, "Swipe up to unlock", scale * 0.7f, (screen_w - tw_swipe)/2, screen_h - 120, COLOR_GRAY);
-    } else {
-        // Show PIN entry interface
-        draw_text(buf, "Enter Passcode", scale * 0.8f, (screen_w - text_width("Enter Passcode", scale * 0.8f))/2, screen_h/2 - 20, COLOR_WHITE);
-        
-        // PIN dots (larger)
-        for (int i = 0; i < PIN_LENGTH; i++) {
-            int x = screen_w/2 - 90 + i * 45;
-            int y = screen_h/2 + 30;
-            if (i < (int)strlen(pin_input)) {
-                draw_circle(buf, x, y, 12, COLOR_WHITE);
-            } else {
-                draw_circle(buf, x, y, 12, COLOR_GRAY);
-                draw_circle(buf, x, y, 10, COLOR_BG);
-            }
-        }
-        
-        // PIN pad (larger)
-        int start_x = screen_w/2 - 180, start_y = screen_h/2 + 100;
-        for (int i = 0; i < NUM_PIN_BUTTONS; i++) {
-            int row = (i < 9) ? i / 3 : 3;
-            int col = (i < 9) ? i % 3 : 1;
-            pin_buttons[i].x = start_x + col * 120;
-            pin_buttons[i].y = start_y + row * 120;
-            draw_button(buf, &pin_buttons[i]);
+    // Swipe up indicator
+    draw_text_centered(buf, "Swipe up to unlock", SMALL_TEXT, screen_h - 200, COLOR_GRAY);
+    
+    // Home indicator
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_LIGHT_GRAY);
+}
+
+void draw_pin_entry(uint32_t *buf) {
+    clear_screen(buf, COLOR_BG);
+    draw_status_bar(buf);
+    
+    // PIN entry title
+    draw_text_centered(buf, "Enter Passcode", MEDIUM_TEXT, 200, COLOR_WHITE);
+    
+    // PIN dots
+    int dot_spacing = 80;
+    int start_x = screen_w/2 - 120;
+    for (int i = 0; i < 4; i++) {
+        int x = start_x + i * dot_spacing;
+        int y = 320;
+        if (i < (int)strlen(pin_code)) {
+            draw_circle_filled(buf, x, y, 20, COLOR_WHITE);
+        } else {
+            draw_circle_filled(buf, x, y, 20, COLOR_GRAY);
+            draw_circle_filled(buf, x, y, 16, COLOR_BG);
         }
     }
+    
+    // PIN pad
+    char pin_labels[] = "123456789*0#";
+    int pad_start_x = screen_w/2 - 240;
+    int pad_start_y = 450;
+    
+    for (int i = 0; i < 12; i++) {
+        int row = i / 3;
+        int col = i % 3;
+        int x = pad_start_x + col * 160;
+        int y = pad_start_y + row * 160;
+        
+        // Skip * and # for now, only show 0-9
+        if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
+        
+        draw_circle_filled(buf, x + 80, y + 80, 70, COLOR_GRAY);
+        
+        char btn_text[2] = {pin_labels[i], 0};
+        int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
+        draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
+    }
+    
+    // Home indicator
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_LIGHT_GRAY);
 }
 
 void draw_home_screen(uint32_t *buf) {
-    clear(buf, COLOR_BG);
+    clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    // App grid (bigger icons)
+    // App grid (4x3)
     int apps_per_row = 3;
-    int icon_size = 120;
-    int spacing = 60;
-    int start_x = (screen_w - (apps_per_row * icon_size + (apps_per_row - 1) * spacing)) / 2;
-    int start_y = 150;
+    int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
+    int start_x = (screen_w - grid_width) / 2;
+    int start_y = STATUS_HEIGHT + 100;
     
-    for (int i = 0; i < NUM_APPS; i++) {
+    for (int i = 0; i < APP_COUNT && i < 12; i++) {
         int row = i / apps_per_row;
         int col = i % apps_per_row;
-        int x = start_x + col * (icon_size + spacing);
-        int y = start_y + row * (icon_size + spacing + 30);
-        draw_app_icon(buf, &apps[i], x, y, icon_size);
+        int x = start_x + col * (ICON_SIZE + MARGIN);
+        int y = start_y + row * (ICON_SIZE + MARGIN * 2);
+        
+        // App icon background
+        draw_rounded_rect(buf, x, y, ICON_SIZE, ICON_SIZE, 40, apps[i].color);
+        
+        // App name below icon
+        int text_w = measure_text_width(apps[i].name, SMALL_TEXT);
+        draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
     }
     
-    // Home indicator (bigger)
-    draw_rect(buf, screen_w/2 - 80, screen_h - 30, 160, 6, COLOR_WHITE);
+    // Home indicator
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
 }
 
 void draw_app_screen(uint32_t *buf) {
-    clear(buf, COLOR_BG);
+    clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    App *app = &apps[current_app];
-    int tw = text_width(app->name, scale * 2.0f);
-    draw_text(buf, app->name, scale * 2.0f, (screen_w - tw)/2, 140, COLOR_WHITE);
-    
-    // Simple app content based on app type
-    if (current_app == 5) { // Calculator
-        char calc_display[] = "0";
-        int cw = text_width(calc_display, scale * 3.0f);
-        draw_text(buf, calc_display, scale * 3.0f, (screen_w - cw)/2, 220, COLOR_WHITE);
+    if (current_app_id >= 0 && current_app_id < APP_COUNT) {
+        App *app = &apps[current_app_id];
         
-        char calc_buttons[] = "789+456-123*0=./";
-        for (int i = 0; i < 16; i++) {
-            int row = i / 4, col = i % 4;
-            int x = 60 + col * 100, y = 320 + row * 100;
-            char btn_text[2] = {calc_buttons[i], 0};
-            draw_circle(buf, x + 40, y + 40, 40, COLOR_GRAY);
-            int btw = text_width(btn_text, scale * 1.2f);
-            draw_text(buf, btn_text, scale * 1.2f, x + 40 - btw/2, y + 30, COLOR_WHITE);
+        // App title
+        draw_text_centered(buf, app->name, LARGE_TEXT, 200, COLOR_WHITE);
+        
+        // Simple app content
+        if (current_app_id == 5) { // Calculator
+            draw_text_centered(buf, "0", LARGE_TEXT * 2, 350, COLOR_WHITE);
+            
+            // Calculator buttons
+            char calc_btns[] = "789+456-123*C0=";
+            int calc_start_x = screen_w/2 - 320;
+            int calc_start_y = 500;
+            
+            for (int i = 0; i < 16; i++) {
+                int row = i / 4;
+                int col = i % 4;
+                int x = calc_start_x + col * 160;
+                int y = calc_start_y + row * 120;
+                
+                uint32_t btn_color = (col == 3) ? COLOR_ORANGE : COLOR_GRAY;
+                draw_rounded_rect(buf, x, y, 140, 100, 20, btn_color);
+                
+                char btn_text[2] = {calc_btns[i], 0};
+                int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
+                draw_text(buf, btn_text, MEDIUM_TEXT, x + 70 - text_w/2, y + 30, COLOR_WHITE);
+            }
+        } else {
+            draw_text_centered(buf, "App Content", MEDIUM_TEXT, 400, COLOR_GRAY);
         }
-    } else {
-        draw_text(buf, "App Content", scale * 1.2f, 50, 250, COLOR_GRAY);
     }
     
-    // Home indicator (bigger)
-    draw_rect(buf, screen_w/2 - 80, screen_h - 30, 160, 6, COLOR_WHITE);
+    // Home indicator
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+}
+
+int point_in_circle(int px, int py, int cx, int cy, int radius) {
+    int dx = px - cx, dy = py - cy;
+    return (dx*dx + dy*dy) <= (radius*radius);
 }
 
 int point_in_rect(int px, int py, int x, int y, int w, int h) {
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
-void handle_touch() {
-    if (!touch.just_pressed) return;
+void handle_touch_input() {
+    uint64_t now = get_time_ms();
     
-    if (current_state == STATE_LOCK && pin_entry_visible) {
-        // Check PIN buttons only when PIN entry is visible
-        for (int i = 0; i < NUM_PIN_BUTTONS; i++) {
-            Button *btn = &pin_buttons[i];
-            if (point_in_rect(touch.x, touch.y, btn->x, btn->y, btn->w, btn->h)) {
-                if (strlen(pin_input) < PIN_LENGTH) {
-                    char digit[2] = {'0' + btn->id, 0};
-                    strcat(pin_input, digit);
-                    if (strlen(pin_input) == PIN_LENGTH) {
-                        if (strcmp(pin_input, "1234") == 0) {
-                            current_state = STATE_HOME;
-                            pin_entry_visible = 0;
-                            memset(pin_input, 0, sizeof(pin_input));
-                        } else {
-                            // Wrong PIN, clear after a moment
-                            memset(pin_input, 0, sizeof(pin_input));
+    if (!touch.pressed || (now - touch.last_touch_time) < DEBOUNCE_MS) {
+        touch.touch_registered = 0;
+        return;
+    }
+    
+    if (touch.touch_registered) return;
+    touch.touch_registered = 1;
+    
+    if (current_state == PIN_ENTRY) {
+        // Handle PIN pad
+        char pin_labels[] = "123456789*0#";
+        int pad_start_x = screen_w/2 - 240;
+        int pad_start_y = 450;
+        
+        for (int i = 0; i < 12; i++) {
+            if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
+            
+            int row = i / 3;
+            int col = i % 3;
+            int x = pad_start_x + col * 160;
+            int y = pad_start_y + row * 160;
+            
+            if (point_in_circle(touch.x, touch.y, x + 80, y + 80, 70)) {
+                if (strlen(pin_code) < 4) {
+                    char digit[2] = {pin_labels[i], 0};
+                    strcat(pin_code, digit);
+                    
+                    if (strlen(pin_code) == 4) {
+                        if (strcmp(pin_code, "1234") == 0) {
+                            current_state = HOME_SCREEN;
                         }
+                        memset(pin_code, 0, sizeof(pin_code));
                     }
                 }
                 break;
             }
         }
-    } else if (current_state == STATE_HOME) {
-        // Check app icons (updated for bigger icons)
-        int apps_per_row = 3, icon_size = 120, spacing = 60;
-        int start_x = (screen_w - (apps_per_row * icon_size + (apps_per_row - 1) * spacing)) / 2;
-        int start_y = 150;
+    } else if (current_state == HOME_SCREEN) {
+        // Handle app selection  
+        int apps_per_row = 3;
+        int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
+        int start_x = (screen_w - grid_width) / 2;
+        int start_y = STATUS_HEIGHT + 100;
         
-        for (int i = 0; i < NUM_APPS; i++) {
-            int row = i / apps_per_row, col = i % apps_per_row;
-            int x = start_x + col * (icon_size + spacing);
-            int y = start_y + row * (icon_size + spacing + 30);
-            if (point_in_rect(touch.x, touch.y, x, y, icon_size, icon_size)) {
-                current_app = i;
-                current_state = STATE_APP;
+        for (int i = 0; i < APP_COUNT && i < 12; i++) {
+            int row = i / apps_per_row;
+            int col = i % apps_per_row;
+            int x = start_x + col * (ICON_SIZE + MARGIN);
+            int y = start_y + row * (ICON_SIZE + MARGIN * 2);
+            
+            if (point_in_rect(touch.x, touch.y, x, y, ICON_SIZE, ICON_SIZE)) {
+                current_app_id = i;
+                current_state = APP_SCREEN;
                 break;
             }
         }
@@ -365,124 +438,173 @@ void handle_touch() {
 }
 
 void handle_gestures() {
-    if (touch.just_pressed) {
-        touch.swipe_start_x = touch.x;
-        touch.swipe_start_y = touch.y;
-        touch.swiping = 1;
+    static int swipe_detected = 0;
+    
+    if (touch.pressed && !touch.is_swiping) {
+        touch.start_x = touch.x;
+        touch.start_y = touch.y;
+        touch.is_swiping = 1;
+        swipe_detected = 0;
     }
     
-    if (!touch.pressed && touch.swiping) {
-        int dx = touch.x - touch.swipe_start_x;
-        int dy = touch.y - touch.swipe_start_y;
+    if (!touch.pressed && touch.is_swiping && !swipe_detected) {
+        int dx = touch.x - touch.start_x;
+        int dy = touch.y - touch.start_y;
+        int distance = sqrt(dx*dx + dy*dy);
         
-        if (abs(dy) > abs(dx) && abs(dy) > 100) {
-            if (dy < 0 && current_state == STATE_LOCK && !pin_entry_visible) { 
-                // Swipe up from lock screen shows PIN entry
-                pin_entry_visible = 1;
-            } else if (dy < 0 && current_state == STATE_LOCK && pin_entry_visible) { 
-                // Second swipe up (or wrong PIN) goes to home if PIN is correct
-                if (strlen(pin_input) == PIN_LENGTH && strcmp(pin_input, "1234") == 0) {
-                    current_state = STATE_HOME;
-                    pin_entry_visible = 0;
-                    memset(pin_input, 0, sizeof(pin_input));
+        if (distance > 150) {
+            swipe_detected = 1;
+            
+            if (abs(dy) > abs(dx)) {
+                if (dy < 0) { // Swipe up
+                    if (current_state == LOCK_SCREEN) {
+                        current_state = PIN_ENTRY;
+                    } else if (current_state == APP_SCREEN) {
+                        current_state = HOME_SCREEN;
+                    }
+                } else { // Swipe down
+                    if (current_state == PIN_ENTRY) {
+                        current_state = LOCK_SCREEN;
+                        memset(pin_code, 0, sizeof(pin_code));
+                    }
                 }
-            } else if (dy < 0 && current_state == STATE_APP) { 
-                // Swipe up from app goes to home
-                current_state = STATE_HOME;
-            } else if (dy > 0 && current_state == STATE_LOCK && pin_entry_visible) {
-                // Swipe down hides PIN entry
-                pin_entry_visible = 0;
-                memset(pin_input, 0, sizeof(pin_input));
             }
         }
-        touch.swiping = 0;
+        touch.is_swiping = 0;
     }
 }
 
-void init_touch() {
-    for (int i = 0; i < MAX_TOUCH_DEVICES; i++) {
+void init_touch_devices() {
+    for (int i = 0; i < 16; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
-        struct input_absinfo ax, ay;
-        if (ioctl(fd, EVIOCGABS(ABS_X), &ax) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &ay) < 0) {
-            close(fd); continue;
+        
+        struct input_absinfo abs_x, abs_y;
+        if (ioctl(fd, EVIOCGABS(ABS_X), &abs_x) < 0 || 
+            ioctl(fd, EVIOCGABS(ABS_Y), &abs_y) < 0) {
+            close(fd);
+            continue;
         }
-        touch_devs[num_touch++] = (TouchDev){fd, ax.minimum, ax.maximum, ay.minimum, ay.maximum};
+        
+        touch_devices[num_touch_devices++] = (TouchDevice){
+            fd, abs_x.minimum, abs_x.maximum, abs_y.minimum, abs_y.maximum
+        };
     }
 }
 
-void read_touch() {
-    touch.just_pressed = 0;
-    struct pollfd fds[MAX_TOUCH_DEVICES];
-    for (int i = 0; i < num_touch; i++) fds[i] = (struct pollfd){touch_devs[i].fd, POLLIN, 0};
-    if (poll(fds, num_touch, 0) <= 0) return;
-
-    for (int i = 0; i < num_touch; i++) {
+void read_touch_events() {
+    struct pollfd fds[16];
+    for (int i = 0; i < num_touch_devices; i++) {
+        fds[i] = (struct pollfd){touch_devices[i].fd, POLLIN, 0};
+    }
+    
+    if (poll(fds, num_touch_devices, 0) <= 0) return;
+    
+    for (int i = 0; i < num_touch_devices; i++) {
         if (!(fds[i].revents & POLLIN)) continue;
+        
         struct input_event ev;
         int raw_x = touch.x, raw_y = touch.y, tracking = touch.pressed;
         
-        while (read(touch_devs[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
+        while (read(touch_devices[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
             if (ev.type == EV_ABS) {
-                if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X)
-                    raw_x = (ev.value - touch_devs[i].min_x) * screen_w / (touch_devs[i].max_x - touch_devs[i].min_x + 1);
-                if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y)
-                    raw_y = (ev.value - touch_devs[i].min_y) * screen_h / (touch_devs[i].max_y - touch_devs[i].min_y + 1);
-                if (ev.code == ABS_MT_TRACKING_ID) tracking = (ev.value >= 0);
+                if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
+                    raw_x = (ev.value - touch_devices[i].min_x) * screen_w / 
+                           (touch_devices[i].max_x - touch_devices[i].min_x + 1);
+                }
+                if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
+                    raw_y = (ev.value - touch_devices[i].min_y) * screen_h / 
+                           (touch_devices[i].max_y - touch_devices[i].min_y + 1);
+                }
+                if (ev.code == ABS_MT_TRACKING_ID) {
+                    tracking = (ev.value >= 0);
+                }
             } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
                 tracking = ev.value;
             } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
                 touch.last_pressed = touch.pressed;
                 touch.pressed = tracking;
-                touch.just_pressed = (touch.pressed && !touch.last_pressed);
-                touch.x = raw_x; touch.y = raw_y;
+                touch.x = raw_x;
+                touch.y = raw_y;
+                if (touch.pressed && !touch.last_pressed) {
+                    touch.last_touch_time = get_time_ms();
+                }
             }
         }
     }
 }
 
-void cleanup(int sig) {
-    if (fbp) clear(fbp, 0x00000000);
+void cleanup_and_exit(int sig) {
+    if (framebuffer) {
+        clear_screen(framebuffer, COLOR_BG);
+        munmap(framebuffer, stride * screen_h);
+    }
     if (backbuffer) free(backbuffer);
-    if (fbp) munmap(fbp, stride * screen_h);
     if (fb_fd > 0) close(fb_fd);
+    for (int i = 0; i < num_touch_devices; i++) {
+        close(touch_devices[i].fd);
+    }
     exit(0);
 }
 
 int main() {
-    signal(SIGINT, cleanup);
+    signal(SIGINT, cleanup_and_exit);
     
-    FILE *f = fopen(FONT_PATH, "rb");
-    if (!f) { perror("Font load failed"); exit(1); }
-    fseek(f, 0, SEEK_END); int size = ftell(f); rewind(f);
-    unsigned char *ttf = malloc(size); fread(ttf, 1, size, f); fclose(f);
+    // Load font
+    FILE *font_file = fopen(FONT_PATH, "rb");
+    if (!font_file) { perror("Font load failed"); exit(1); }
+    fseek(font_file, 0, SEEK_END);
+    int font_size = ftell(font_file);
+    rewind(font_file);
+    unsigned char *font_data = malloc(font_size);
+    fread(font_data, 1, font_size, font_file);
+    fclose(font_file);
     
-    if (!stbtt_InitFont(&font, ttf, 0)) { fprintf(stderr, "Failed to initialize font\n"); return -1; }
-    scale = stbtt_ScaleForPixelHeight(&font, FONT_HEIGHT);
+    if (!stbtt_InitFont(&font, font_data, 0)) {
+        fprintf(stderr, "Font initialization failed\n");
+        exit(1);
+    }
     
+    // Initialize framebuffer
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
     fb_fd = open("/dev/fb0", O_RDWR);
+    if (fb_fd < 0) { perror("Framebuffer open failed"); exit(1); }
+    
     ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo);
     ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
-    screen_w = vinfo.xres; screen_h = vinfo.yres; stride = finfo.line_length;
-    fbp = mmap(0, stride * screen_h, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+    
+    screen_w = vinfo.xres;
+    screen_h = vinfo.yres;
+    stride = finfo.line_length;
+    
+    framebuffer = mmap(0, stride * screen_h, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+    if (framebuffer == MAP_FAILED) { perror("Framebuffer mmap failed"); exit(1); }
+    
     backbuffer = malloc(screen_w * screen_h * 4);
+    if (!backbuffer) { perror("Backbuffer allocation failed"); exit(1); }
     
-    init_touch();
+    init_touch_devices();
     
+    // Main loop
     while (1) {
-        read_touch();
-        handle_touch();
+        read_touch_events();
+        handle_touch_input();
         handle_gestures();
         
-        if (current_state == STATE_LOCK) draw_lock_screen(backbuffer);
-        else if (current_state == STATE_HOME) draw_home_screen(backbuffer);
-        else if (current_state == STATE_APP) draw_app_screen(backbuffer);
+        // Render current state
+        switch (current_state) {
+            case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
+            case PIN_ENTRY: draw_pin_entry(backbuffer); break;
+            case HOME_SCREEN: draw_home_screen(backbuffer); break;
+            case APP_SCREEN: draw_app_screen(backbuffer); break;
+        }
         
-        memcpy(fbp, backbuffer, screen_w * screen_h * 4);
+        // Copy to framebuffer
+        memcpy(framebuffer, backbuffer, screen_w * screen_h * 4);
+        
         usleep(16666); // 60 FPS
     }
     
