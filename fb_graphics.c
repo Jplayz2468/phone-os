@@ -54,6 +54,7 @@ typedef struct {
     int is_dragging_indicator;
     int drag_start_y;
     int indicator_x;
+    float smooth_scale; // Smoothed scale to prevent flickering
 } TouchState;
 
 // Global variables
@@ -61,7 +62,7 @@ uint32_t *framebuffer = NULL, *backbuffer = NULL, *home_buffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
 TouchDevice touch_devices[16];
 int num_touch_devices = 0;
-TouchState touch = {0};
+TouchState touch = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0f};
 AppState current_state = LOCK_SCREEN;
 char pin_input[5] = {0};
 int current_app = -1;
@@ -228,14 +229,14 @@ int is_touching_home_indicator(int touch_x, int touch_y) {
 }
 
 float calculate_scale_from_drag(int drag_distance) {
-    // Smoother scaling with deadzone to prevent flickering
-    if (drag_distance < 10) return 1.0f; // Small deadzone
+    // Much smoother scaling with larger deadzone to prevent fighting
+    if (drag_distance < 20) return 1.0f; // Larger deadzone
     
-    float max_drag = screen_h * 0.6f;
-    float normalized = (drag_distance - 10) / max_drag; // Account for deadzone
-    float scale_factor = 1.0f - normalized * 0.7f;
+    float max_drag = screen_h * 0.5f; // Reduced max drag for easier access
+    float normalized = (drag_distance - 20) / max_drag;
+    float scale_factor = 1.0f - normalized * 0.6f; // Less dramatic scaling
     
-    if (scale_factor < 0.3f) scale_factor = 0.3f;
+    if (scale_factor < 0.4f) scale_factor = 0.4f; // Don't go too small
     if (scale_factor > 1.0f) scale_factor = 1.0f;
     return scale_factor;
 }
@@ -476,19 +477,35 @@ void draw_app_screen(uint32_t *buf) {
 }
 
 void update_animations() {
-    if (is_animating) {
-        float diff = target_scale - current_scale;
-        if (fabs(diff) < 0.01f) {
-            current_scale = target_scale;
-            is_animating = 0;
+    // Smooth scale interpolation to prevent flickering
+    if (touch.is_dragging_indicator) {
+        // While dragging, smoothly interpolate to target scale
+        float target = current_scale;
+        float diff = target - touch.smooth_scale;
+        touch.smooth_scale += diff * 0.3f; // Smooth interpolation
+    } else {
+        // Not dragging - use regular animation system
+        if (is_animating) {
+            float diff = target_scale - current_scale;
+            if (fabs(diff) < 0.01f) {
+                current_scale = target_scale;
+                touch.smooth_scale = current_scale;
+                is_animating = 0;
+            } else {
+                current_scale += diff * animation_speed;
+                touch.smooth_scale = current_scale;
+            }
         } else {
-            current_scale += diff * animation_speed;
+            // Ensure smooth_scale matches current_scale when idle
+            touch.smooth_scale = current_scale;
         }
     }
 }
 
 void render_final_frame(uint32_t *output_buf) {
-    // Always render current screen to backbuffer first
+    // STABLE RENDERING PIPELINE - always follow same path
+    
+    // Step 1: Always render current screen to backbuffer
     switch (current_state) {
         case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
         case PIN_ENTRY: draw_pin_entry(backbuffer); break;
@@ -496,58 +513,57 @@ void render_final_frame(uint32_t *output_buf) {
         case APP_SCREEN: draw_app_screen(backbuffer); break;
     }
     
-    // If not scaling, just copy to output
-    if (current_scale >= 0.99f && !touch.is_dragging_indicator) {
+    // Step 2: Use smooth_scale instead of current_scale for stability
+    float render_scale = touch.smooth_scale;
+    
+    // Step 3: Decide rendering mode based on stable scale
+    if (render_scale >= 0.98f) {
+        // Normal mode - just copy current screen
         memcpy(output_buf, backbuffer, screen_w * screen_h * 4);
     } else {
-        // We're scaling - render live home screen as background
-        draw_home_screen(output_buf); // Render directly to output
+        // Scaling mode - stable multi-step process
         
-        // Apply blur based on how much we're scaling
-        // Less scaling (smaller window) = less blur (closer to home access)
-        float blur_strength = (1.0f - current_scale) * 0.8f; // Max 0.8 strength
+        // 3a: Render home screen to separate buffer (always same way)
+        draw_home_screen(home_buffer);
         
-        if (blur_strength > 0.1f) {
-            // Blur the background in-place
-            gaussian_blur(output_buf, home_buffer, blur_strength);
-            memcpy(output_buf, home_buffer, screen_w * screen_h * 4);
+        // 3b: Copy home screen to output as base
+        memcpy(output_buf, home_buffer, screen_w * screen_h * 4);
+        
+        // 3c: Apply blur to background if needed
+        float blur_strength = (1.0f - render_scale) * 0.6f; // Reduced strength
+        if (blur_strength > 0.05f) {
+            // Create temp buffer for blur to avoid in-place conflicts
+            uint32_t *blur_temp = malloc(screen_w * screen_h * 4);
+            gaussian_blur(output_buf, blur_temp, blur_strength);
+            memcpy(output_buf, blur_temp, screen_w * screen_h * 4);
+            free(blur_temp);
         }
         
-        // Draw scaled current screen on top of blurred background
-        if (current_scale < 0.99f) {
-            int indicator_offset_x = 0;
-            if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-                indicator_offset_x = touch.indicator_x - screen_w/2;
-            }
-            
-            draw_scaled_content(output_buf, backbuffer, current_scale, indicator_offset_x, 0);
+        // 3d: Draw scaled content on top (always same way)
+        int offset_x = 0;
+        if (touch.is_dragging_indicator && touch.indicator_x > 0) {
+            offset_x = (touch.indicator_x - screen_w/2) / 4; // Reduced movement
         }
+        
+        draw_scaled_content(output_buf, backbuffer, render_scale, offset_x, 0);
     }
     
-    // Debug dot on final output
+    // Step 4: Debug dot (always same)
     if (touch.pressed) {
-        for (int y = -10; y <= 10; y++) {
-            for (int x = -10; x <= 10; x++) {
-                if (x*x + y*y <= 100) {
-                    int px = touch.x + x, py = touch.y + y;
-                    if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
-                        output_buf[py * screen_w + px] = COLOR_RED;
-                    }
-                }
-            }
-        }
+        draw_circle_filled(output_buf, touch.x, touch.y, 8, COLOR_RED);
     }
 }
 
 void handle_touch_input() {
-    // Home indicator dragging with improved smoothness
+    // Home indicator dragging with ANTI-FLICKERING measures
     if (touch.pressed && !touch.last_pressed) {
         if (is_touching_home_indicator(touch.x, touch.y) && 
             (current_state == HOME_SCREEN || current_state == APP_SCREEN)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
             touch.indicator_x = touch.x;
-            printf("Home indicator drag started (entire bottom area active)\n");
+            touch.smooth_scale = 1.0f; // Initialize smooth scale
+            printf("Started drag from bottom area\n");
             return;
         }
         
@@ -567,21 +583,24 @@ void handle_touch_input() {
         }
     }
     
-    // Ongoing indicator drag with smoothing
+    // Ongoing indicator drag with STABLE updates
     if (touch.pressed && touch.is_dragging_indicator) {
         int drag_distance = touch.drag_start_y - touch.y;
-        if (drag_distance >= 0) { // Only drag upward
+        if (drag_distance >= 0) { // Only upward drags
+            
             float new_scale = calculate_scale_from_drag(drag_distance);
             
-            // Smooth scale changes to reduce flickering
-            float scale_diff = fabs(new_scale - current_scale);
-            if (scale_diff > 0.01f) { // Only update if significant change
+            // ANTI-FLICKER: Only update if change is significant
+            float scale_change = fabs(new_scale - current_scale);
+            if (scale_change > 0.02f) { // Larger threshold
                 current_scale = new_scale;
-                touch.indicator_x = touch.x; // Follow finger horizontally
+                touch.indicator_x = touch.x;
                 
-                // Only log every 20px of movement to reduce spam
-                if (drag_distance % 20 == 0) {
-                    printf("Smooth drag: distance=%d, scale=%.2f\n", drag_distance, current_scale);
+                // Reduced logging to prevent console spam
+                static int last_logged_distance = -1;
+                if (abs(drag_distance - last_logged_distance) > 30) {
+                    printf("Stable drag: %d px, scale %.2f\n", drag_distance, current_scale);
+                    last_logged_distance = drag_distance;
                 }
             }
         }
@@ -591,17 +610,17 @@ void handle_touch_input() {
     // Indicator drag release
     if (!touch.pressed && touch.last_pressed && touch.is_dragging_indicator) {
         int final_drag = touch.drag_start_y - touch.y;
-        float threshold = screen_h * 0.25f; // Reduced threshold to 25%
+        float threshold = screen_h * 0.2f; // Even lower threshold
         
         printf("Released: drag=%d, threshold=%.0f\n", final_drag, threshold);
         
         if (final_drag > threshold) {
-            printf("Going to home screen!\n");
+            printf("→ Going to home screen\n");
             current_state = HOME_SCREEN;
             target_scale = 1.0f;
             is_animating = 1;
         } else {
-            printf("Springing back to app!\n");
+            printf("→ Spring back to app\n");
             target_scale = 1.0f;
             is_animating = 1;
         }
@@ -610,7 +629,7 @@ void handle_touch_input() {
         return;
     }
     
-    // Regular button handling (unchanged)
+    // Regular button handling (unchanged but with debug)
     if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
     
     if (current_state == PIN_ENTRY) {
@@ -632,6 +651,7 @@ void handle_touch_input() {
             int dy = touch.y - center_y;
             if ((dx*dx + dy*dy) <= (100*100)) {
                 touch.action_taken = 1;
+                printf("PIN digit: %c\n", pin_labels[i]);
                 
                 if (strlen(pin_input) < 4) {
                     char digit[2] = {pin_labels[i], 0};
@@ -639,7 +659,10 @@ void handle_touch_input() {
                     
                     if (strlen(pin_input) == 4) {
                         if (strcmp(pin_input, "1234") == 0) {
+                            printf("✓ PIN correct - unlocking\n");
                             current_state = HOME_SCREEN;
+                        } else {
+                            printf("✗ PIN incorrect\n");
                         }
                         memset(pin_input, 0, sizeof(pin_input));
                     }
@@ -666,7 +689,7 @@ void handle_touch_input() {
                 touch.action_taken = 1;
                 current_app = i;
                 current_state = APP_SCREEN;
-                printf("Launched app: %s\n", apps[i].name);
+                printf("→ Launched: %s\n", apps[i].name);
                 return;
             }
         }
@@ -796,8 +819,9 @@ int main() {
     
     init_touch_devices();
     
-    printf("Phone OS started - entire bottom area is home indicator!\n");
-    printf("Features: Gaussian blur, smooth scaling, no flickering\n");
+    printf("🚀 Phone OS - Anti-Flicker Version\n");
+    printf("📱 Entire bottom area = home indicator\n");
+    printf("✨ Stable pipeline, smooth scaling, quality blur\n");
     while (1) {
         read_touch_events();
         handle_touch_input();
