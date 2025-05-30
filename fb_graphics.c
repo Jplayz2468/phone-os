@@ -61,7 +61,7 @@ typedef struct {
     int x, y, pressed, last_pressed;
     int start_x, start_y, is_swiping;
     uint64_t last_touch_time;
-    int touch_registered;
+    int touch_handled;
 } Touch;
 
 // Global variables
@@ -366,22 +366,29 @@ void draw_app_screen(uint32_t *buf) {
     draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
 }
 
-int point_in_circle(int px, int py, int cx, int cy, int radius) {
+int point_near_circle(int px, int py, int cx, int cy, int radius) {
     int dx = px - cx, dy = py - cy;
-    return (dx*dx + dy*dy) <= (radius*radius);
+    int distance_sq = dx*dx + dy*dy;
+    int expanded_radius = radius + 30; // 30px proximity buffer
+    return distance_sq <= (expanded_radius * expanded_radius);
 }
 
-int point_in_rect(int px, int py, int x, int y, int w, int h) {
-    return px >= x && px < x + w && py >= y && py < y + h;
+int point_near_rect(int px, int py, int x, int y, int w, int h) {
+    int buffer = 20; // 20px proximity buffer
+    return px >= (x - buffer) && px < (x + w + buffer) && 
+           py >= (y - buffer) && py < (y + h + buffer);
 }
 
 void handle_touch_input() {
-    // Detect tap (just pressed) for immediate response
-    int just_pressed = touch.pressed && !touch.last_pressed;
-    if (!just_pressed) return;
+    // Only process new touches to avoid repeat triggers
+    int new_touch = touch.pressed && !touch.last_pressed;
+    if (!new_touch || touch.touch_handled) return;
+    
+    // Mark this touch as handled to prevent repeat processing
+    touch.touch_handled = 1;
     
     if (current_state == PIN_ENTRY) {
-        // Handle PIN pad
+        // PIN pad with proximity detection
         char pin_labels[] = "123456789*0#";
         int pad_start_x = screen_w/2 - 240;
         int pad_start_y = STATUS_HEIGHT + 250;
@@ -391,10 +398,12 @@ void handle_touch_input() {
             
             int row = i / 3;
             int col = i % 3;
-            int x = pad_start_x + col * 160;
-            int y = pad_start_y + row * 160;
+            int btn_x = pad_start_x + col * 160;
+            int btn_y = pad_start_y + row * 160;
+            int center_x = btn_x + 80;
+            int center_y = btn_y + 80;
             
-            if (point_in_circle(touch.x, touch.y, x + 80, y + 80, 70)) {
+            if (point_near_circle(touch.x, touch.y, center_x, center_y, 70)) {
                 if (strlen(pin_code) < 4) {
                     char digit[2] = {pin_labels[i], 0};
                     strcat(pin_code, digit);
@@ -403,33 +412,38 @@ void handle_touch_input() {
                         if (strcmp(pin_code, "1234") == 0) {
                             current_state = HOME_SCREEN;
                         }
+                        // Clear PIN for next attempt
                         memset(pin_code, 0, sizeof(pin_code));
                     }
                 }
-                break;
+                return; // Exit after handling touch
             }
         }
-    } else if (current_state == HOME_SCREEN) {
-        // Handle app selection  
+    }
+    
+    else if (current_state == HOME_SCREEN) {
+        // App icons with proximity detection
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
-        int start_y = STATUS_HEIGHT + 80; // Match the drawing position
+        int start_y = STATUS_HEIGHT + 80;
         
         for (int i = 0; i < APP_COUNT && i < 12; i++) {
             int row = i / apps_per_row;
             int col = i % apps_per_row;
-            int x = start_x + col * (ICON_SIZE + MARGIN);
-            int y = start_y + row * (ICON_SIZE + MARGIN * 2);
+            int icon_x = start_x + col * (ICON_SIZE + MARGIN);
+            int icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
             
-            if (point_in_rect(touch.x, touch.y, x, y, ICON_SIZE, ICON_SIZE)) {
+            if (point_near_rect(touch.x, touch.y, icon_x, icon_y, ICON_SIZE, ICON_SIZE)) {
                 current_app_id = i;
                 current_state = APP_SCREEN;
-                break;
+                return; // Exit after handling touch
             }
         }
-    } else if (current_state == APP_SCREEN && current_app_id == 5) {
-        // Handle calculator buttons
+    }
+    
+    else if (current_state == APP_SCREEN && current_app_id == 5) {
+        // Calculator buttons with proximity detection
         char calc_btns[] = "789+456-123*C0=";
         int calc_start_x = screen_w/2 - 320;
         int calc_start_y = STATUS_HEIGHT + 350;
@@ -437,36 +451,36 @@ void handle_touch_input() {
         for (int i = 0; i < 16; i++) {
             int row = i / 4;
             int col = i % 4;
-            int x = calc_start_x + col * 160;
-            int y = calc_start_y + row * 120;
+            int btn_x = calc_start_x + col * 160;
+            int btn_y = calc_start_y + row * 120;
             
-            if (point_in_rect(touch.x, touch.y, x, y, 140, 100)) {
-                // Calculator button pressed - could add functionality here
-                break;
+            if (point_near_rect(touch.x, touch.y, btn_x, btn_y, 140, 100)) {
+                // Calculator button pressed - visual feedback or functionality could go here
+                return; // Exit after handling touch
             }
         }
     }
 }
 
 void handle_gestures() {
-    static int swipe_detected = 0;
+    static int swipe_handled = 0;
     
     // Start tracking when touch begins
     if (touch.pressed && !touch.last_pressed) {
         touch.start_x = touch.x;
         touch.start_y = touch.y;
         touch.is_swiping = 1;
-        swipe_detected = 0;
+        swipe_handled = 0;
     }
     
-    // Detect swipe when touch ends
-    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_detected) {
+    // Detect swipe when touch ends (and it wasn't handled as a button press)
+    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled && !touch.touch_handled) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
         int distance = sqrt(dx*dx + dy*dy);
         
-        if (distance > 120) { // Reduced threshold for easier swiping
-            swipe_detected = 1;
+        if (distance > 100) { // Lower threshold for easier swiping
+            swipe_handled = 1;
             
             if (abs(dy) > abs(dx)) {
                 if (dy < 0) { // Swipe up
@@ -488,6 +502,7 @@ void handle_gestures() {
     // Reset swiping when touch ends
     if (!touch.pressed && touch.last_pressed) {
         touch.is_swiping = 0;
+        swipe_handled = 0;
     }
 }
 
@@ -545,6 +560,13 @@ void read_touch_events() {
                 touch.pressed = tracking;
                 touch.x = raw_x;
                 touch.y = raw_y;
+                
+                // Reset touch handling flag when touch is released
+                if (!touch.pressed && touch.last_pressed) {
+                    touch.touch_handled = 0;
+                }
+                
+                // Set timestamp for new touches
                 if (touch.pressed && !touch.last_pressed) {
                     touch.last_touch_time = get_time_ms();
                 }
