@@ -25,27 +25,16 @@
 #define COLOR_RED 0xFFFF3B30
 #define COLOR_ORANGE 0xFFFF9500
 #define COLOR_PURPLE 0xFFAF52DE
-#define COLOR_YELLOW 0xFFFFCC02
 
-// UI scaling for 1080p (assuming ~1080x1920)
+// UI scaling for 1080p
 #define STATUS_HEIGHT 140
 #define LARGE_TEXT 96
 #define MEDIUM_TEXT 64
 #define SMALL_TEXT 48
 #define ICON_SIZE 200
-#define BUTTON_SIZE 160
 #define MARGIN 60
-#define TOUCH_THRESHOLD 50
-#define DEBOUNCE_MS 50
 
-typedef enum { LOCK_SCREEN, PIN_ENTRY, HOME_SCREEN, APP_SCREEN } State;
-
-typedef struct {
-    int x, y, w, h, id;
-    char text[32];
-    uint32_t bg_color, text_color;
-    int visible;
-} UIElement;
+typedef enum { LOCK_SCREEN, PIN_ENTRY, HOME_SCREEN, APP_SCREEN } AppState;
 
 typedef struct {
     char name[32];
@@ -59,7 +48,7 @@ typedef struct {
 
 typedef struct {
     int x, y, pressed, last_pressed;
-    int start_x, start_y, is_swiping;
+    int start_x, start_y;
     uint64_t last_touch_time;
     int action_taken;
     int is_dragging_indicator;
@@ -68,15 +57,19 @@ typedef struct {
 } TouchState;
 
 // Global variables
-uint32_t *framebuffer = NULL, *backbuffer = NULL;
+uint32_t *framebuffer = NULL, *backbuffer = NULL, *home_buffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
 TouchDevice touch_devices[16];
 int num_touch_devices = 0;
-Touch touch = {0};
-State current_state = LOCK_SCREEN;
-char pin_code[5] = {0};
-int current_app_id = -1;
+TouchState touch = {0};
+AppState current_state = LOCK_SCREEN;
+char pin_input[5] = {0};
+int current_app = -1;
 int battery_level = 87;
+float current_scale = 1.0f;
+float target_scale = 1.0f;
+int is_animating = 0;
+float animation_speed = 0.15f;
 stbtt_fontinfo font;
 
 // Apps configuration
@@ -125,11 +118,8 @@ void draw_circle_filled(uint32_t *buf, int cx, int cy, int radius, uint32_t colo
 }
 
 void draw_rounded_rect(uint32_t *buf, int x, int y, int w, int h, int radius, uint32_t color) {
-    // Main rectangles
     draw_rect(buf, x + radius, y, w - 2*radius, h, color);
     draw_rect(buf, x, y + radius, w, h - 2*radius, color);
-    
-    // Corner circles
     draw_circle_filled(buf, x + radius, y + radius, radius, color);
     draw_circle_filled(buf, x + w - radius, y + radius, radius, color);
     draw_circle_filled(buf, x + radius, y + h - radius, radius, color);
@@ -148,10 +138,10 @@ int measure_text_width(const char *text, int font_size) {
 }
 
 void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uint32_t color) {
-    float scale = stbtt_ScaleForPixelHeight(&font, font_size);
+    float text_scale = stbtt_ScaleForPixelHeight(&font, font_size);
     int ascent, descent, line_gap;
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
-    int baseline = y + (int)(ascent * scale);
+    int baseline = y + (int)(ascent * text_scale);
     
     int pos_x = x;
     for (const char *p = text; *p; p++) {
@@ -159,14 +149,14 @@ void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uin
         stbtt_GetCodepointHMetrics(&font, *p, &advance, &left_bearing);
         
         int c_x1, c_y1, c_x2, c_y2;
-        stbtt_GetCodepointBitmapBox(&font, *p, scale, scale, &c_x1, &c_y1, &c_x2, &c_y2);
+        stbtt_GetCodepointBitmapBox(&font, *p, text_scale, text_scale, &c_x1, &c_y1, &c_x2, &c_y2);
         
         int bitmap_w = c_x2 - c_x1;
         int bitmap_h = c_y2 - c_y1;
         
         if (bitmap_w > 0 && bitmap_h > 0) {
             unsigned char *bitmap = malloc(bitmap_w * bitmap_h);
-            stbtt_MakeCodepointBitmap(&font, bitmap, bitmap_w, bitmap_h, bitmap_w, scale, scale, *p);
+            stbtt_MakeCodepointBitmap(&font, bitmap, bitmap_w, bitmap_h, bitmap_w, text_scale, text_scale, *p);
             
             for (int row = 0; row < bitmap_h; row++) {
                 for (int col = 0; col < bitmap_w; col++) {
@@ -182,7 +172,7 @@ void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uin
             }
             free(bitmap);
         }
-        pos_x += (int)(advance * scale);
+        pos_x += (int)(advance * text_scale);
     }
 }
 
@@ -192,8 +182,46 @@ void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, u
     draw_text(buf, text, font_size, x, y, color);
 }
 
+void get_current_time(char *time_str, char *date_str) {
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    if (time_str) strftime(time_str, 32, "%H:%M", tm);
+    if (date_str) strftime(date_str, 64, "%A, %B %d", tm);
+}
+
+void draw_status_bar(uint32_t *buf) {
+    char time_str[32];
+    get_current_time(time_str, NULL);
+    draw_text_centered(buf, time_str, MEDIUM_TEXT, 25, COLOR_WHITE);
+    
+    // Battery indicator
+    int bat_x = screen_w - 200, bat_y = 25;
+    int bat_w = 80, bat_h = 40;
+    
+    draw_rounded_rect(buf, bat_x, bat_y, bat_w, bat_h, 8, COLOR_WHITE);
+    draw_rounded_rect(buf, bat_x + 3, bat_y + 3, bat_w - 6, bat_h - 6, 5, COLOR_BG);
+    draw_rounded_rect(buf, bat_x + bat_w, bat_y + 12, 8, 16, 4, COLOR_WHITE);
+    
+    int fill_width = (int)((bat_w - 6) * battery_level / 100.0f);
+    uint32_t fill_color = battery_level > 20 ? COLOR_GREEN : COLOR_RED;
+    if (fill_width > 0) {
+        draw_rounded_rect(buf, bat_x + 3, bat_y + 3, fill_width, bat_h - 6, 5, fill_color);
+    }
+    
+    char bat_text[8];
+    snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
+    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 5, COLOR_WHITE);
+    
+    // Cellular bars - bottom-aligned
+    int bars_bottom = 65;
+    for (int i = 0; i < 4; i++) {
+        int bar_h = 12 + i * 8;
+        int bar_y = bars_bottom - bar_h;
+        draw_rect(buf, 80 + i * 20, bar_y, 12, bar_h, COLOR_WHITE);
+    }
+}
+
 int is_touching_home_indicator(int touch_x, int touch_y) {
-    // Always-enlarged hitbox for home indicator
     int indicator_center_x = screen_w / 2;
     int indicator_y = screen_h - 80;
     int hitbox_w = 200, hitbox_h = 60;
@@ -205,8 +233,7 @@ int is_touching_home_indicator(int touch_x, int touch_y) {
 }
 
 float calculate_scale_from_drag(int drag_distance) {
-    // Convert drag distance to scale (1.0 = full size, 0.3 = very small)
-    float max_drag = screen_h * 0.6f; // 60% of screen height
+    float max_drag = screen_h * 0.6f;
     float scale_factor = 1.0f - (drag_distance / max_drag) * 0.7f;
     if (scale_factor < 0.3f) scale_factor = 0.3f;
     if (scale_factor > 1.0f) scale_factor = 1.0f;
@@ -214,7 +241,6 @@ float calculate_scale_from_drag(int drag_distance) {
 }
 
 void simple_blur(uint32_t *src, uint32_t *dest, int blur_radius) {
-    // Simple box blur implementation
     if (blur_radius <= 0) {
         memcpy(dest, src, screen_w * screen_h * 4);
         return;
@@ -250,7 +276,6 @@ void simple_blur(uint32_t *src, uint32_t *dest, int blur_radius) {
 }
 
 void draw_scaled_content(uint32_t *dest, uint32_t *src, float scale, int offset_x, int offset_y) {
-    // Draw scaled content centered on screen
     int scaled_w = (int)(screen_w * scale);
     int scaled_h = (int)(screen_h * scale);
     int start_x = (screen_w - scaled_w) / 2 + offset_x;
@@ -273,50 +298,6 @@ void draw_scaled_content(uint32_t *dest, uint32_t *src, float scale, int offset_
     }
 }
 
-void get_current_time(char *time_str, char *date_str) {
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    strftime(time_str, 32, "%H:%M", tm);
-    strftime(date_str, 64, "%A, %B %d", tm);
-}
-
-void draw_status_bar(uint32_t *buf) {
-    char time_str[32];
-    get_current_time(time_str, NULL);
-    draw_text_centered(buf, time_str, MEDIUM_TEXT, 25, COLOR_WHITE);
-    
-    // Battery indicator
-    int bat_x = screen_w - 200, bat_y = 25;
-    int bat_w = 80, bat_h = 40;
-    
-    // Battery outline
-    draw_rounded_rect(buf, bat_x, bat_y, bat_w, bat_h, 8, COLOR_WHITE);
-    draw_rounded_rect(buf, bat_x + 3, bat_y + 3, bat_w - 6, bat_h - 6, 5, COLOR_BG);
-    
-    // Battery tip
-    draw_rounded_rect(buf, bat_x + bat_w, bat_y + 12, 8, 16, 4, COLOR_WHITE);
-    
-    // Battery fill
-    int fill_width = (int)((bat_w - 6) * battery_level / 100.0f);
-    uint32_t fill_color = battery_level > 20 ? COLOR_GREEN : COLOR_RED;
-    if (fill_width > 0) {
-        draw_rounded_rect(buf, bat_x + 3, bat_y + 3, fill_width, bat_h - 6, 5, fill_color);
-    }
-    
-    // Battery percentage
-    char bat_text[8];
-    snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
-    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 5, COLOR_WHITE);
-    
-    // Cellular bars - bottom-aligned (like real phones)
-    int bars_bottom = 65; // Fixed bottom position for all bars
-    for (int i = 0; i < 4; i++) {
-        int bar_h = 12 + i * 8; // Heights: 12, 20, 28, 36
-        int bar_y = bars_bottom - bar_h; // Bottom-aligned
-        draw_rect(buf, 80 + i * 20, bar_y, 12, bar_h, COLOR_WHITE);
-    }
-}
-
 void draw_lock_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
@@ -324,16 +305,9 @@ void draw_lock_screen(uint32_t *buf) {
     char time_str[32], date_str[64];
     get_current_time(time_str, date_str);
     
-    // Large time display - moved down more to avoid status bar
     draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 250, COLOR_WHITE);
-    
-    // Date display - proper spacing below time
     draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 120, COLOR_LIGHT_GRAY);
-    
-    // Swipe up indicator
     draw_text_centered(buf, "Swipe up to unlock", SMALL_TEXT, screen_h - 200, COLOR_GRAY);
-    
-    // Home indicator
     draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_LIGHT_GRAY);
 }
 
@@ -341,16 +315,14 @@ void draw_pin_entry(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    // PIN entry title - moved down to avoid status bar
     draw_text_centered(buf, "Enter Passcode", MEDIUM_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
     
-    // PIN dots - moved down accordingly
     int dot_spacing = 80;
     int start_x = screen_w/2 - 120;
     for (int i = 0; i < 4; i++) {
         int x = start_x + i * dot_spacing;
         int y = STATUS_HEIGHT + 150;
-        if (i < (int)strlen(pin_code)) {
+        if (i < (int)strlen(pin_input)) {
             draw_circle_filled(buf, x, y, 20, COLOR_WHITE);
         } else {
             draw_circle_filled(buf, x, y, 20, COLOR_GRAY);
@@ -358,19 +330,17 @@ void draw_pin_entry(uint32_t *buf) {
         }
     }
     
-    // PIN pad - moved down accordingly
     char pin_labels[] = "123456789*0#";
     int pad_start_x = screen_w/2 - 240;
     int pad_start_y = STATUS_HEIGHT + 250;
     
     for (int i = 0; i < 12; i++) {
+        if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
+        
         int row = i / 3;
         int col = i % 3;
         int x = pad_start_x + col * 160;
         int y = pad_start_y + row * 160;
-        
-        // Skip * and # for now, only show 0-9
-        if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
         
         draw_circle_filled(buf, x + 80, y + 80, 70, COLOR_GRAY);
         
@@ -379,7 +349,6 @@ void draw_pin_entry(uint32_t *buf) {
         draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
     }
     
-    // Home indicator
     draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_LIGHT_GRAY);
 }
 
@@ -387,11 +356,10 @@ void draw_home_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    // App grid (4x3) - proper spacing from status bar
     int apps_per_row = 3;
     int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
     int start_x = (screen_w - grid_width) / 2;
-    int start_y = STATUS_HEIGHT + 80; // Proper spacing below status bar
+    int start_y = STATUS_HEIGHT + 80;
     
     for (int i = 0; i < APP_COUNT && i < 12; i++) {
         int row = i / apps_per_row;
@@ -399,24 +367,20 @@ void draw_home_screen(uint32_t *buf) {
         int x = start_x + col * (ICON_SIZE + MARGIN);
         int y = start_y + row * (ICON_SIZE + MARGIN * 2);
         
-        // App icon background
         draw_rounded_rect(buf, x, y, ICON_SIZE, ICON_SIZE, 40, apps[i].color);
         
-        // App name below icon
         int text_w = measure_text_width(apps[i].name, SMALL_TEXT);
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
     }
     
-    // Home indicator with visual feedback when being dragged
-    int indicator_bar_w = touch.is_dragging_indicator ? 240 : 160; // Wider when dragging
+    // Home indicator with visual feedback
+    int indicator_bar_w = touch.is_dragging_indicator ? 240 : 160;
     uint32_t indicator_color = touch.is_dragging_indicator ? COLOR_BLUE : COLOR_WHITE;
     
     if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-        // Follow finger position
         draw_rounded_rect(buf, touch.indicator_x - indicator_bar_w/2, screen_h - 80, 
                          indicator_bar_w, 8, 4, indicator_color);
     } else {
-        // Normal position
         draw_rounded_rect(buf, screen_w/2 - indicator_bar_w/2, screen_h - 80, 
                          indicator_bar_w, 8, 4, indicator_color);
     }
@@ -426,17 +390,14 @@ void draw_app_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    if (current_app_id >= 0 && current_app_id < APP_COUNT) {
-        App *app = &apps[current_app_id];
+    if (current_app >= 0 && current_app < APP_COUNT) {
+        App *app = &apps[current_app];
         
-        // App title - proper spacing from status bar
         draw_text_centered(buf, app->name, LARGE_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
         
-        // Simple app content
-        if (current_app_id == 5) { // Calculator
+        if (current_app == 5) { // Calculator
             draw_text_centered(buf, "0", LARGE_TEXT * 2, STATUS_HEIGHT + 200, COLOR_WHITE);
             
-            // Calculator buttons
             char calc_btns[] = "789+456-123*C0=";
             int calc_start_x = screen_w/2 - 320;
             int calc_start_y = STATUS_HEIGHT + 350;
@@ -460,28 +421,136 @@ void draw_app_screen(uint32_t *buf) {
     }
     
     // Home indicator
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    int indicator_bar_w = touch.is_dragging_indicator ? 240 : 160;
+    uint32_t indicator_color = touch.is_dragging_indicator ? COLOR_BLUE : COLOR_WHITE;
+    
+    if (touch.is_dragging_indicator && touch.indicator_x > 0) {
+        draw_rounded_rect(buf, touch.indicator_x - indicator_bar_w/2, screen_h - 80, 
+                         indicator_bar_w, 8, 4, indicator_color);
+    } else {
+        draw_rounded_rect(buf, screen_w/2 - indicator_bar_w/2, screen_h - 80, 
+                         indicator_bar_w, 8, 4, indicator_color);
+    }
 }
 
-int point_near_circle(int px, int py, int cx, int cy, int radius) {
-    int dx = px - cx, dy = py - cy;
-    int distance_sq = dx*dx + dy*dy;
-    int expanded_radius = radius + 30; // 30px proximity buffer
-    return distance_sq <= (expanded_radius * expanded_radius);
+void update_animations() {
+    if (is_animating) {
+        float diff = target_scale - current_scale;
+        if (fabs(diff) < 0.01f) {
+            current_scale = target_scale;
+            is_animating = 0;
+        } else {
+            current_scale += diff * animation_speed;
+        }
+    }
 }
 
-int point_near_rect(int px, int py, int x, int y, int w, int h) {
-    int buffer = 20; // 20px proximity buffer
-    return px >= (x - buffer) && px < (x + w + buffer) && 
-           py >= (y - buffer) && py < (y + h + buffer);
+void render_final_frame(uint32_t *output_buf) {
+    switch (current_state) {
+        case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
+        case PIN_ENTRY: draw_pin_entry(backbuffer); break;
+        case HOME_SCREEN: draw_home_screen(backbuffer); break;
+        case APP_SCREEN: draw_app_screen(backbuffer); break;
+    }
+    
+    if (current_scale >= 0.99f && !touch.is_dragging_indicator) {
+        memcpy(output_buf, backbuffer, screen_w * screen_h * 4);
+        return;
+    }
+    
+    draw_home_screen(home_buffer);
+    
+    int blur_radius = (int)((1.0f - current_scale) * 8.0f);
+    if (blur_radius > 0) {
+        simple_blur(home_buffer, output_buf, blur_radius);
+    } else {
+        memcpy(output_buf, home_buffer, screen_w * screen_h * 4);
+    }
+    
+    if (current_scale < 0.99f) {
+        int indicator_offset_x = 0;
+        if (touch.is_dragging_indicator && touch.indicator_x > 0) {
+            indicator_offset_x = touch.indicator_x - screen_w/2;
+        }
+        
+        draw_scaled_content(output_buf, backbuffer, current_scale, indicator_offset_x, 0);
+    }
+    
+    // Debug dot
+    if (touch.pressed) {
+        for (int y = -10; y <= 10; y++) {
+            for (int x = -10; x <= 10; x++) {
+                if (x*x + y*y <= 100) {
+                    int px = touch.x + x, py = touch.y + y;
+                    if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
+                        output_buf[py * screen_w + px] = COLOR_RED;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void handle_touch_input() {
-    // Process touches but prevent double-clicks from single touch
-    if (!touch.pressed || touch.action_taken) return;
+    // Home indicator dragging
+    if (touch.pressed && !touch.last_pressed) {
+        if (is_touching_home_indicator(touch.x, touch.y) && 
+            (current_state == HOME_SCREEN || current_state == APP_SCREEN)) {
+            touch.is_dragging_indicator = 1;
+            touch.drag_start_y = touch.y;
+            touch.indicator_x = touch.x;
+            printf("Home indicator drag started at (%d, %d)\n", touch.x, touch.y);
+            return;
+        }
+        
+        // Simple lock screen swipe
+        if (current_state == LOCK_SCREEN) {
+            touch.start_x = touch.x;
+            touch.start_y = touch.y;
+        }
+    }
+    
+    // Lock screen swipe up
+    if (touch.pressed && current_state == LOCK_SCREEN) {
+        int dy = touch.start_y - touch.y;
+        if (dy > 50) {
+            current_state = PIN_ENTRY;
+            return;
+        }
+    }
+    
+    // Ongoing indicator drag
+    if (touch.pressed && touch.is_dragging_indicator) {
+        int drag_distance = touch.drag_start_y - touch.y;
+        if (drag_distance > 0) {
+            current_scale = calculate_scale_from_drag(drag_distance);
+            touch.indicator_x = touch.x;
+        }
+        return;
+    }
+    
+    // Indicator drag release
+    if (!touch.pressed && touch.last_pressed && touch.is_dragging_indicator) {
+        int final_drag = touch.drag_start_y - touch.y;
+        float threshold = screen_h * 0.3f;
+        
+        if (final_drag > threshold) {
+            current_state = HOME_SCREEN;
+            target_scale = 1.0f;
+            is_animating = 1;
+        } else {
+            target_scale = 1.0f;
+            is_animating = 1;
+        }
+        
+        touch.is_dragging_indicator = 0;
+        return;
+    }
+    
+    // Regular button handling
+    if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
     
     if (current_state == PIN_ENTRY) {
-        // PIN pad with very generous proximity detection
         char pin_labels[] = "123456789*0#";
         int pad_start_x = screen_w/2 - 240;
         int pad_start_y = STATUS_HEIGHT + 250;
@@ -496,23 +565,20 @@ void handle_touch_input() {
             int center_x = btn_x + 80;
             int center_y = btn_y + 80;
             
-            // Very generous hit area - 100px radius
             int dx = touch.x - center_x;
             int dy = touch.y - center_y;
             if ((dx*dx + dy*dy) <= (100*100)) {
-                printf("PIN button %c pressed!\n", pin_labels[i]);
-                touch.action_taken = 1; // Prevent double-click
+                touch.action_taken = 1;
                 
-                if (strlen(pin_code) < 4) {
+                if (strlen(pin_input) < 4) {
                     char digit[2] = {pin_labels[i], 0};
-                    strcat(pin_code, digit);
+                    strcat(pin_input, digit);
                     
-                    if (strlen(pin_code) == 4) {
-                        if (strcmp(pin_code, "1234") == 0) {
-                            printf("Correct PIN! Unlocking...\n");
+                    if (strlen(pin_input) == 4) {
+                        if (strcmp(pin_input, "1234") == 0) {
                             current_state = HOME_SCREEN;
                         }
-                        memset(pin_code, 0, sizeof(pin_code));
+                        memset(pin_input, 0, sizeof(pin_input));
                     }
                 }
                 return;
@@ -521,7 +587,6 @@ void handle_touch_input() {
     }
     
     else if (current_state == HOME_SCREEN) {
-        // App icons with very generous hit areas
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
@@ -533,132 +598,14 @@ void handle_touch_input() {
             int icon_x = start_x + col * (ICON_SIZE + MARGIN);
             int icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
             
-            // Very generous hit area - 50px buffer on all sides
             if (touch.x >= (icon_x - 50) && touch.x < (icon_x + ICON_SIZE + 50) &&
                 touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
-                printf("App %s launched!\n", apps[i].name);
-                touch.action_taken = 1; // Prevent double-click
-                current_app_id = i;
+                touch.action_taken = 1;
+                current_app = i;
                 current_state = APP_SCREEN;
                 return;
             }
         }
-    }
-    
-    else if (current_state == APP_SCREEN && current_app_id == 5) {
-        // Calculator buttons with generous hit areas
-        char calc_btns[] = "789+456-123*C0=";
-        int calc_start_x = screen_w/2 - 320;
-        int calc_start_y = STATUS_HEIGHT + 350;
-        
-        for (int i = 0; i < 16; i++) {
-            int row = i / 4;
-            int col = i % 4;
-            int btn_x = calc_start_x + col * 160;
-            int btn_y = calc_start_y + row * 120;
-            
-            // Very generous hit area - 40px buffer
-            if (touch.x >= (btn_x - 40) && touch.x < (btn_x + 140 + 40) &&
-                touch.y >= (btn_y - 40) && touch.y < (btn_y + 100 + 40)) {
-                printf("Calculator button %c pressed!\n", calc_btns[i]);
-                touch.action_taken = 1; // Prevent double-click
-                return;
-            }
-        }
-    }
-}
-
-void handle_gestures() {
-    static int swipe_handled = 0;
-    
-    // Start tracking when touch begins
-    if (touch.pressed && !touch.last_pressed) {
-        touch.start_x = touch.x;
-        touch.start_y = touch.y;
-        touch.is_swiping = 1;
-        swipe_handled = 0;
-    }
-    
-    // Robust swipe detection while dragging - works for ANY distance
-    if (touch.pressed && touch.is_swiping && !swipe_handled && !touch.action_taken) {
-        int dx = touch.x - touch.start_x;
-        int dy = touch.y - touch.start_y;
-        int abs_dx = abs(dx);
-        int abs_dy = abs(dy);
-        
-        // Custom robust system: detect any meaningful movement (short OR long drags)
-        int meaningful_movement = (abs_dx > 8 || abs_dy > 8); // Even tiny movements count
-        
-        if (meaningful_movement) {
-            // SWIPE UP detection - works for short drags AND long drags
-            if (dy < 0 && abs_dy >= 5) { // Any upward movement of at least 5px
-                if (current_state == LOCK_SCREEN) {
-                    // Zone: Bottom half of screen (including very bottom edge)
-                    if (touch.start_y >= screen_h / 2) {
-                        printf("Swipe up from lock screen detected! (dy=%d, distance=%d)\n", dy, (int)sqrt(dx*dx + dy*dy));
-                        current_state = PIN_ENTRY;
-                        swipe_handled = 1;
-                        touch.action_taken = 1;
-                    }
-                } else if (current_state == APP_SCREEN) {
-                    // Zone: Bottom 20% of screen (including very bottom edge)
-                    if (touch.start_y >= (screen_h * 4 / 5)) {
-                        printf("Swipe up from app detected! (dy=%d, distance=%d)\n", dy, (int)sqrt(dx*dx + dy*dy));
-                        current_state = HOME_SCREEN;
-                        swipe_handled = 1;
-                        touch.action_taken = 1;
-                    }
-                }
-            }
-            
-            // SWIPE DOWN detection - works for short drags AND long drags
-            else if (dy > 0 && abs_dy >= 5) { // Any downward movement of at least 5px
-                if (current_state == PIN_ENTRY) {
-                    // Zone: Top half of screen
-                    if (touch.start_y <= screen_h / 2) {
-                        printf("Swipe down from PIN entry detected! (dy=%d, distance=%d)\n", dy, (int)sqrt(dx*dx + dy*dy));
-                        current_state = LOCK_SCREEN;
-                        memset(pin_code, 0, sizeof(pin_code));
-                        swipe_handled = 1;
-                        touch.action_taken = 1;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Backup detection when touch ends - handles edge cases
-    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled) {
-        int dx = touch.x - touch.start_x;
-        int dy = touch.y - touch.start_y;
-        int abs_dy = abs(dy);
-        
-        // Super forgiving backup detection
-        if (abs_dy >= 3) { // Just 3px movement needed
-            if (dy < 0) { // Swipe up
-                if (current_state == LOCK_SCREEN && touch.start_y >= screen_h / 2) {
-                    printf("Swipe up from lock screen detected (on release)! (dy=%d)\n", dy);
-                    current_state = PIN_ENTRY;
-                    swipe_handled = 1;
-                } else if (current_state == APP_SCREEN && touch.start_y >= (screen_h * 4 / 5)) {
-                    printf("Swipe up from app detected (on release)! (dy=%d)\n", dy);
-                    current_state = HOME_SCREEN;
-                    swipe_handled = 1;
-                }
-            } else if (dy > 0 && current_state == PIN_ENTRY && touch.start_y <= screen_h / 2) {
-                printf("Swipe down from PIN entry detected (on release)! (dy=%d)\n", dy);
-                current_state = LOCK_SCREEN;
-                memset(pin_code, 0, sizeof(pin_code));
-                swipe_handled = 1;
-            }
-        }
-    }
-    
-    // Reset when touch ends
-    if (!touch.pressed && touch.last_pressed) {
-        touch.is_swiping = 0;
-        swipe_handled = 0;
-        touch.action_taken = 0; // Reset for next touch
     }
 }
 
@@ -718,14 +665,11 @@ void read_touch_events() {
                 touch.y = raw_y;
                 touch.last_touch_time = get_time_ms();
                 
-                // Debug: Print touch events
                 if (touch.pressed && !touch.last_pressed) {
-                    printf("Touch started at (%d, %d)\n", touch.x, touch.y);
-                    touch.action_taken = 0; // Reset for new touch
+                    touch.action_taken = 0;
                 }
                 if (!touch.pressed && touch.last_pressed) {
-                    printf("Touch ended at (%d, %d)\n", touch.x, touch.y);
-                    touch.action_taken = 0; // Reset when touch ends
+                    touch.action_taken = 0;
                 }
             }
         }
@@ -788,14 +732,12 @@ int main() {
     
     init_touch_devices();
     
-    // Main loop
     printf("Phone OS started - touch the home indicator to drag!\n");
     while (1) {
         read_touch_events();
         handle_touch_input();
         update_animations();
         
-        // Render final frame with scaling and blur effects
         render_final_frame(framebuffer);
         
         usleep(16666); // 60 FPS
