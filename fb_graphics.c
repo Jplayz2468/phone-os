@@ -224,10 +224,12 @@ void draw_status_bar(uint32_t *buf) {
     snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
     draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 5, COLOR_WHITE);
     
-    // WiFi indicator
+    // Cellular bars - bottom-aligned (like real phones)
+    int bars_bottom = 65; // Fixed bottom position for all bars
     for (int i = 0; i < 4; i++) {
-        int bar_h = 12 + i * 8;
-        draw_rect(buf, 80 + i * 20, 45 - bar_h/2, 12, bar_h, COLOR_WHITE);
+        int bar_h = 12 + i * 8; // Heights: 12, 20, 28, 36
+        int bar_y = bars_bottom - bar_h; // Bottom-aligned
+        draw_rect(buf, 80 + i * 20, bar_y, 12, bar_h, COLOR_WHITE);
     }
 }
 
@@ -482,29 +484,31 @@ void handle_gestures() {
         swipe_handled = 0;
     }
     
-    // Detect swipe while dragging (more responsive) or when touch ends
+    // Robust swipe detection while dragging - works for ANY distance
     if (touch.pressed && touch.is_swiping && !swipe_handled && !touch.action_taken) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
-        int distance = sqrt(dx*dx + dy*dy);
+        int abs_dx = abs(dx);
+        int abs_dy = abs(dy);
         
-        // Very loose swipe detection - just 15px movement for slow drags
-        if (distance > 15) {
-            
-            // SWIPE UP detection with zones extending to very bottom
-            if (dy < -10) { // Any upward movement of just 10px
+        // Custom robust system: detect any meaningful movement (short OR long drags)
+        int meaningful_movement = (abs_dx > 8 || abs_dy > 8); // Even tiny movements count
+        
+        if (meaningful_movement) {
+            // SWIPE UP detection - works for short drags AND long drags
+            if (dy < 0 && abs_dy >= 5) { // Any upward movement of at least 5px
                 if (current_state == LOCK_SCREEN) {
-                    // Can swipe up from anywhere on bottom half of screen (including very bottom)
+                    // Zone: Bottom half of screen (including very bottom edge)
                     if (touch.start_y >= screen_h / 2) {
-                        printf("Swipe up from lock screen detected!\n");
+                        printf("Swipe up from lock screen detected! (dy=%d, distance=%d)\n", dy, (int)sqrt(dx*dx + dy*dy));
                         current_state = PIN_ENTRY;
                         swipe_handled = 1;
                         touch.action_taken = 1;
                     }
                 } else if (current_state == APP_SCREEN) {
-                    // Can swipe up from bottom 20% of screen (including very bottom edge)
+                    // Zone: Bottom 20% of screen (including very bottom edge)
                     if (touch.start_y >= (screen_h * 4 / 5)) {
-                        printf("Swipe up from app detected!\n");
+                        printf("Swipe up from app detected! (dy=%d, distance=%d)\n", dy, (int)sqrt(dx*dx + dy*dy));
                         current_state = HOME_SCREEN;
                         swipe_handled = 1;
                         touch.action_taken = 1;
@@ -512,12 +516,12 @@ void handle_gestures() {
                 }
             }
             
-            // SWIPE DOWN detection
-            else if (dy > 10) { // Any downward movement of just 10px
+            // SWIPE DOWN detection - works for short drags AND long drags
+            else if (dy > 0 && abs_dy >= 5) { // Any downward movement of at least 5px
                 if (current_state == PIN_ENTRY) {
-                    // Can swipe down from anywhere in top half of screen
+                    // Zone: Top half of screen
                     if (touch.start_y <= screen_h / 2) {
-                        printf("Swipe down from PIN entry detected!\n");
+                        printf("Swipe down from PIN entry detected! (dy=%d, distance=%d)\n", dy, (int)sqrt(dx*dx + dy*dy));
                         current_state = LOCK_SCREEN;
                         memset(pin_code, 0, sizeof(pin_code));
                         swipe_handled = 1;
@@ -528,25 +532,26 @@ void handle_gestures() {
         }
     }
     
-    // Also check when touch ends (backup detection with even more forgiving thresholds)
+    // Backup detection when touch ends - handles edge cases
     if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
-        int distance = sqrt(dx*dx + dy*dy);
+        int abs_dy = abs(dy);
         
-        if (distance > 8) { // Super forgiving on release - just 8px movement
-            if (dy < -5) { // Swipe up - just 5px movement
+        // Super forgiving backup detection
+        if (abs_dy >= 3) { // Just 3px movement needed
+            if (dy < 0) { // Swipe up
                 if (current_state == LOCK_SCREEN && touch.start_y >= screen_h / 2) {
-                    printf("Swipe up from lock screen detected (on release)!\n");
+                    printf("Swipe up from lock screen detected (on release)! (dy=%d)\n", dy);
                     current_state = PIN_ENTRY;
                     swipe_handled = 1;
                 } else if (current_state == APP_SCREEN && touch.start_y >= (screen_h * 4 / 5)) {
-                    printf("Swipe up from app detected (on release)!\n");
+                    printf("Swipe up from app detected (on release)! (dy=%d)\n", dy);
                     current_state = HOME_SCREEN;
                     swipe_handled = 1;
                 }
-            } else if (dy > 5 && current_state == PIN_ENTRY && touch.start_y <= screen_h / 2) {
-                printf("Swipe down from PIN entry detected (on release)!\n");
+            } else if (dy > 0 && current_state == PIN_ENTRY && touch.start_y <= screen_h / 2) {
+                printf("Swipe down from PIN entry detected (on release)! (dy=%d)\n", dy);
                 current_state = LOCK_SCREEN;
                 memset(pin_code, 0, sizeof(pin_code));
                 swipe_handled = 1;
