@@ -63,6 +63,7 @@ TouchDevice touch_devices[16];
 int num_touch_devices = 0;
 TouchState touch = {0};
 AppState current_state = LOCK_SCREEN;
+AppState animation_target_state = LOCK_SCREEN;
 char pin_input[5] = {0};
 int current_app = -1;
 int battery_level = 87;
@@ -372,14 +373,9 @@ void draw_home_screen(uint32_t *buf) {
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
     }
     
-    // Home indicator - visual feedback when dragging
-    int indicator_w = touch.is_dragging_indicator ? 240 : 200;
-    uint32_t indicator_color = touch.is_dragging_indicator ? COLOR_BLUE : COLOR_WHITE;
-    
-    if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-        draw_rounded_rect(buf, touch.indicator_x - indicator_w/2, screen_h - 80, indicator_w, 8, 4, indicator_color);
-    } else {
-        draw_rounded_rect(buf, screen_w/2 - indicator_w/2, screen_h - 80, indicator_w, 8, 4, indicator_color);
+    // Only show home indicator when NOT scaling
+    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
+        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
     }
 }
 
@@ -417,39 +413,46 @@ void draw_app_screen(uint32_t *buf) {
         }
     }
     
-    // Home indicator with feedback
-    int indicator_w = touch.is_dragging_indicator ? 240 : 200;
-    uint32_t indicator_color = touch.is_dragging_indicator ? COLOR_BLUE : COLOR_WHITE;
-    
-    if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-        draw_rounded_rect(buf, touch.indicator_x - indicator_w/2, screen_h - 80, indicator_w, 8, 4, indicator_color);
-    } else {
-        draw_rounded_rect(buf, screen_w/2 - indicator_w/2, screen_h - 80, indicator_w, 8, 4, indicator_color);
+    // Only show home indicator when NOT scaling
+    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
+        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
     }
 }
 
 void update_animations() {
     if (is_animating) {
         float diff = target_scale - current_scale;
-        if (fabs(diff) < 0.01f) {
+        if (fabs(diff) < 0.01f || (target_scale == 0.0f && current_scale < 0.05f)) {
             current_scale = target_scale;
             is_animating = 0;
+            
+            // Complete state transition when animation finishes
+            if (animation_target_state != current_state) {
+                current_state = animation_target_state;
+                // Reset scale to 1.0 when entering new state
+                if (current_state == HOME_SCREEN) {
+                    current_scale = 1.0f;
+                    target_scale = 1.0f;
+                }
+                printf("✅ Animation complete → %s\n", 
+                    current_state == HOME_SCREEN ? "Home" : "App");
+            }
         } else {
-            current_scale += diff * 0.15f; // Smooth animation
+            current_scale += diff * 0.3f; // Even faster animation (60fps * 0.3 = ~3-4 frames)
         }
     }
 }
 
 void handle_touch_input() {
-    // iOS-style home indicator dragging - SIMPLIFIED APPROACH
+    // iOS-style home indicator dragging with PROPER LOCKING
     
     if (touch.pressed && !touch.last_pressed) {
         if (is_in_bottom_area(touch.x, touch.y) && 
             (current_state == HOME_SCREEN || current_state == APP_SCREEN)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
-            touch.indicator_x = touch.x;
-            printf("🎯 Started dragging from bottom area\n");
+            touch.indicator_x = touch.x; // Lock to finger immediately
+            printf("🎯 Started dragging - locked to finger\n");
             return;
         }
         
@@ -458,29 +461,32 @@ void handle_touch_input() {
         touch.start_y = touch.y;
     }
     
-    // Handle indicator drag
+    // Handle indicator drag - LOCK EVERYTHING TO FINGER
     if (touch.pressed && touch.is_dragging_indicator) {
         int drag_distance = touch.drag_start_y - touch.y;
         if (drag_distance >= 0) {
             current_scale = calculate_scale_from_drag(drag_distance);
-            touch.indicator_x = touch.x; // Follow finger horizontally
+            touch.indicator_x = touch.x; // Always lock bar to finger
         }
         return;
     }
     
-    // Handle indicator release
+    // Handle indicator release - PROPER ANIMATION DIRECTION
     if (!touch.pressed && touch.last_pressed && touch.is_dragging_indicator) {
         int final_drag = touch.drag_start_y - touch.y;
         float threshold = screen_h * 0.2f;
         
         if (final_drag > threshold) {
-            printf("🏠 Going to home screen\n");
-            current_state = HOME_SCREEN;
-            target_scale = 1.0f;
+            // Going to home - app should shrink away
+            printf("🏠 App shrinking away → Home\n");
+            animation_target_state = HOME_SCREEN;
+            target_scale = 0.0f; // Shrink app to nothing
             is_animating = 1;
         } else {
-            printf("↩️ Spring back to app\n");
-            target_scale = 1.0f;
+            // Spring back - app should grow back to full size
+            printf("↩️ App growing back to full size\n");
+            animation_target_state = current_state; // Stay in current state
+            target_scale = 1.0f; // Grow back to full
             is_animating = 1;
         }
         
@@ -494,6 +500,7 @@ void handle_touch_input() {
         if (swipe_dy > 80 && is_in_bottom_area(touch.start_x, touch.start_y)) {
             printf("🔓 Lock screen swipe → PIN entry\n");
             current_state = PIN_ENTRY;
+            animation_target_state = PIN_ENTRY;
             return;
         }
     }
@@ -529,6 +536,7 @@ void handle_touch_input() {
                         if (strcmp(pin_input, "1234") == 0) {
                             printf("✅ Unlocked!\n");
                             current_state = HOME_SCREEN;
+                            animation_target_state = HOME_SCREEN;
                         }
                         memset(pin_input, 0, sizeof(pin_input));
                     }
@@ -555,6 +563,7 @@ void handle_touch_input() {
                 touch.action_taken = 1;
                 current_app = i;
                 current_state = APP_SCREEN;
+                animation_target_state = APP_SCREEN;
                 printf("🚀 Launched: %s\n", apps[i].name);
                 return;
             }
@@ -682,9 +691,13 @@ int main() {
     
     init_touch_devices();
     
-    printf("📱 iOS-Style Phone OS with Simple Rendering\n");
-    printf("🎯 Just like drawing text over circles!\n");
-    printf("✨ Bottom 30%% area = home indicator\n");
+    // Initialize animation state
+    animation_target_state = current_state;
+    
+    printf("📱 iOS-Style Phone OS - PERFECTED! 🚀\n");
+    printf("🎯 Bar locks to finger, window locks to bar\n");
+    printf("✨ Proper animation direction - app pops away!\n");
+    printf("⚡ 60fps smooth animations, hidden bar while scaling\n");
     
     while (1) {
         read_touch_events();
@@ -720,13 +733,26 @@ int main() {
                 case APP_SCREEN: draw_app_screen(home_background); break;
             }
             
-            // Step 4: Draw scaled window over backbuffer
+            // Step 4: Draw scaled window over backbuffer - LOCKED TO BAR POSITION
             int offset_x = 0;
             if (touch.is_dragging_indicator && touch.indicator_x > 0) {
-                offset_x = (touch.indicator_x - screen_w/2) / 3;
+                offset_x = (touch.indicator_x - screen_w/2); // Full horizontal tracking
             }
             
             draw_scaled_window(backbuffer, home_background, current_scale, offset_x, 0);
+            
+            // Step 5: Draw floating home indicator bar - LOCKED TO FINGER
+            if (touch.is_dragging_indicator && touch.indicator_x > 0) {
+                int bar_w = 240; // Larger when dragging
+                int bar_x = touch.indicator_x - bar_w/2;
+                int bar_y = screen_h - 80;
+                
+                // Make sure bar stays on screen
+                if (bar_x < 20) bar_x = 20;
+                if (bar_x + bar_w > screen_w - 20) bar_x = screen_w - 20 - bar_w;
+                
+                draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, 8, 4, COLOR_BLUE);
+            }
         }
         
         // Debug dot - always draw to backbuffer
