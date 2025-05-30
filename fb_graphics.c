@@ -691,48 +691,51 @@ int main() {
         handle_touch_input();
         update_animations();
         
-        // SIMPLE RENDERING - treat scaling like text over background!
+        // CONSISTENT RENDERING - ALWAYS USE BACKBUFFER FIRST
         if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-            // Normal mode - just render current screen
-            switch (current_state) {
-                case LOCK_SCREEN: draw_lock_screen(framebuffer); break;
-                case PIN_ENTRY: draw_pin_entry(framebuffer); break;
-                case HOME_SCREEN: draw_home_screen(framebuffer); break;
-                case APP_SCREEN: draw_app_screen(framebuffer); break;
-            }
-        } else {
-            // Scaling mode - draw window over home background (like text over circle!)
-            
-            // Step 1: Draw home screen as background
-            draw_home_screen(framebuffer);
-            
-            // Step 2: Apply simple blur if needed
-            float blur_amount = (1.0f - current_scale) * 0.5f;
-            if (blur_amount > 0.1f) {
-                apply_simple_blur(framebuffer, blur_amount);
-            }
-            
-            // Step 3: Draw current screen to temp buffer
+            // Normal mode - render current screen to backbuffer
             switch (current_state) {
                 case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
                 case PIN_ENTRY: draw_pin_entry(backbuffer); break;
                 case HOME_SCREEN: draw_home_screen(backbuffer); break;
                 case APP_SCREEN: draw_app_screen(backbuffer); break;
             }
+        } else {
+            // Scaling mode - render to backbuffer as background, then overlay
             
-            // Step 4: Draw scaled window over background (JUST LIKE TEXT OVER CIRCLE!)
+            // Step 1: Draw home screen as background to backbuffer
+            draw_home_screen(backbuffer);
+            
+            // Step 2: Apply blur to backbuffer if needed
+            float blur_amount = (1.0f - current_scale) * 0.5f;
+            if (blur_amount > 0.1f) {
+                apply_simple_blur(backbuffer, blur_amount);
+            }
+            
+            // Step 3: Draw current screen to temp buffer
+            switch (current_state) {
+                case LOCK_SCREEN: draw_lock_screen(home_background); break;
+                case PIN_ENTRY: draw_pin_entry(home_background); break;
+                case HOME_SCREEN: draw_home_screen(home_background); break;
+                case APP_SCREEN: draw_app_screen(home_background); break;
+            }
+            
+            // Step 4: Draw scaled window over backbuffer
             int offset_x = 0;
             if (touch.is_dragging_indicator && touch.indicator_x > 0) {
                 offset_x = (touch.indicator_x - screen_w/2) / 3;
             }
             
-            draw_scaled_window(framebuffer, backbuffer, current_scale, offset_x, 0);
+            draw_scaled_window(backbuffer, home_background, current_scale, offset_x, 0);
         }
         
-        // Debug dot
+        // Debug dot - always draw to backbuffer
         if (touch.pressed) {
-            draw_circle_filled(framebuffer, touch.x, touch.y, 8, COLOR_RED);
+            draw_circle_filled(backbuffer, touch.x, touch.y, 8, COLOR_RED);
         }
+        
+        // SINGLE CONSISTENT COPY TO FRAMEBUFFER
+        memcpy(framebuffer, backbuffer, screen_w * screen_h * 4);
         
         usleep(16666); // 60 FPS
     }
