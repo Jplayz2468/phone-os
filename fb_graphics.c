@@ -28,7 +28,7 @@
 #define COLOR_YELLOW 0xFFFFCC02
 
 // UI scaling for 1080p (assuming ~1080x1920)
-#define STATUS_HEIGHT 120
+#define STATUS_HEIGHT 140
 #define LARGE_TEXT 96
 #define MEDIUM_TEXT 64
 #define SMALL_TEXT 48
@@ -36,7 +36,7 @@
 #define BUTTON_SIZE 160
 #define MARGIN 60
 #define TOUCH_THRESHOLD 50
-#define DEBOUNCE_MS 100
+#define DEBOUNCE_MS 50
 
 typedef enum { LOCK_SCREEN, PIN_ENTRY, HOME_SCREEN, APP_SCREEN } State;
 
@@ -199,10 +199,10 @@ void get_current_time(char *time_str, char *date_str) {
 void draw_status_bar(uint32_t *buf) {
     char time_str[32];
     get_current_time(time_str, NULL);
-    draw_text_centered(buf, time_str, MEDIUM_TEXT, 30, COLOR_WHITE);
+    draw_text_centered(buf, time_str, MEDIUM_TEXT, 25, COLOR_WHITE);
     
     // Battery indicator
-    int bat_x = screen_w - 200, bat_y = 30;
+    int bat_x = screen_w - 200, bat_y = 25;
     int bat_w = 80, bat_h = 40;
     
     // Battery outline
@@ -222,12 +222,12 @@ void draw_status_bar(uint32_t *buf) {
     // Battery percentage
     char bat_text[8];
     snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
-    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y, COLOR_WHITE);
+    draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 5, COLOR_WHITE);
     
     // WiFi indicator
     for (int i = 0; i < 4; i++) {
         int bar_h = 12 + i * 8;
-        draw_rect(buf, 80 + i * 20, 50 - bar_h/2, 12, bar_h, COLOR_WHITE);
+        draw_rect(buf, 80 + i * 20, 45 - bar_h/2, 12, bar_h, COLOR_WHITE);
     }
 }
 
@@ -238,11 +238,11 @@ void draw_lock_screen(uint32_t *buf) {
     char time_str[32], date_str[64];
     get_current_time(time_str, date_str);
     
-    // Large time display
-    draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 200, COLOR_WHITE);
+    // Large time display - moved down more to avoid status bar
+    draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 250, COLOR_WHITE);
     
-    // Date display
-    draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 80, COLOR_LIGHT_GRAY);
+    // Date display - proper spacing below time
+    draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 120, COLOR_LIGHT_GRAY);
     
     // Swipe up indicator
     draw_text_centered(buf, "Swipe up to unlock", SMALL_TEXT, screen_h - 200, COLOR_GRAY);
@@ -255,15 +255,15 @@ void draw_pin_entry(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    // PIN entry title
-    draw_text_centered(buf, "Enter Passcode", MEDIUM_TEXT, 200, COLOR_WHITE);
+    // PIN entry title - moved down to avoid status bar
+    draw_text_centered(buf, "Enter Passcode", MEDIUM_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
     
-    // PIN dots
+    // PIN dots - moved down accordingly
     int dot_spacing = 80;
     int start_x = screen_w/2 - 120;
     for (int i = 0; i < 4; i++) {
         int x = start_x + i * dot_spacing;
-        int y = 320;
+        int y = STATUS_HEIGHT + 150;
         if (i < (int)strlen(pin_code)) {
             draw_circle_filled(buf, x, y, 20, COLOR_WHITE);
         } else {
@@ -272,10 +272,10 @@ void draw_pin_entry(uint32_t *buf) {
         }
     }
     
-    // PIN pad
+    // PIN pad - moved down accordingly
     char pin_labels[] = "123456789*0#";
     int pad_start_x = screen_w/2 - 240;
-    int pad_start_y = 450;
+    int pad_start_y = STATUS_HEIGHT + 250;
     
     for (int i = 0; i < 12; i++) {
         int row = i / 3;
@@ -301,11 +301,11 @@ void draw_home_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
     
-    // App grid (4x3) - increased spacing from status bar
+    // App grid (4x3) - proper spacing from status bar
     int apps_per_row = 3;
     int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
     int start_x = (screen_w - grid_width) / 2;
-    int start_y = STATUS_HEIGHT + 150; // Increased spacing
+    int start_y = STATUS_HEIGHT + 80; // Proper spacing below status bar
     
     for (int i = 0; i < APP_COUNT && i < 12; i++) {
         int row = i / apps_per_row;
@@ -332,17 +332,17 @@ void draw_app_screen(uint32_t *buf) {
     if (current_app_id >= 0 && current_app_id < APP_COUNT) {
         App *app = &apps[current_app_id];
         
-        // App title
-        draw_text_centered(buf, app->name, LARGE_TEXT, 200, COLOR_WHITE);
+        // App title - proper spacing from status bar
+        draw_text_centered(buf, app->name, LARGE_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
         
         // Simple app content
         if (current_app_id == 5) { // Calculator
-            draw_text_centered(buf, "0", LARGE_TEXT * 2, 350, COLOR_WHITE);
+            draw_text_centered(buf, "0", LARGE_TEXT * 2, STATUS_HEIGHT + 200, COLOR_WHITE);
             
             // Calculator buttons
             char calc_btns[] = "789+456-123*C0=";
             int calc_start_x = screen_w/2 - 320;
-            int calc_start_y = 500;
+            int calc_start_y = STATUS_HEIGHT + 350;
             
             for (int i = 0; i < 16; i++) {
                 int row = i / 4;
@@ -358,7 +358,7 @@ void draw_app_screen(uint32_t *buf) {
                 draw_text(buf, btn_text, MEDIUM_TEXT, x + 70 - text_w/2, y + 30, COLOR_WHITE);
             }
         } else {
-            draw_text_centered(buf, "App Content", MEDIUM_TEXT, 400, COLOR_GRAY);
+            draw_text_centered(buf, "App Content", MEDIUM_TEXT, STATUS_HEIGHT + 200, COLOR_GRAY);
         }
     }
     
@@ -376,7 +376,7 @@ int point_in_rect(int px, int py, int x, int y, int w, int h) {
 }
 
 void handle_touch_input() {
-    // Detect tap (just pressed)
+    // Detect tap (just pressed) for immediate response
     int just_pressed = touch.pressed && !touch.last_pressed;
     if (!just_pressed) return;
     
@@ -384,7 +384,7 @@ void handle_touch_input() {
         // Handle PIN pad
         char pin_labels[] = "123456789*0#";
         int pad_start_x = screen_w/2 - 240;
-        int pad_start_y = 450;
+        int pad_start_y = STATUS_HEIGHT + 250;
         
         for (int i = 0; i < 12; i++) {
             if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
@@ -414,7 +414,7 @@ void handle_touch_input() {
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
-        int start_y = STATUS_HEIGHT + 150; // Match the drawing position
+        int start_y = STATUS_HEIGHT + 80; // Match the drawing position
         
         for (int i = 0; i < APP_COUNT && i < 12; i++) {
             int row = i / apps_per_row;
@@ -428,25 +428,44 @@ void handle_touch_input() {
                 break;
             }
         }
+    } else if (current_state == APP_SCREEN && current_app_id == 5) {
+        // Handle calculator buttons
+        char calc_btns[] = "789+456-123*C0=";
+        int calc_start_x = screen_w/2 - 320;
+        int calc_start_y = STATUS_HEIGHT + 350;
+        
+        for (int i = 0; i < 16; i++) {
+            int row = i / 4;
+            int col = i % 4;
+            int x = calc_start_x + col * 160;
+            int y = calc_start_y + row * 120;
+            
+            if (point_in_rect(touch.x, touch.y, x, y, 140, 100)) {
+                // Calculator button pressed - could add functionality here
+                break;
+            }
+        }
     }
 }
 
 void handle_gestures() {
     static int swipe_detected = 0;
     
-    if (touch.pressed && !touch.is_swiping) {
+    // Start tracking when touch begins
+    if (touch.pressed && !touch.last_pressed) {
         touch.start_x = touch.x;
         touch.start_y = touch.y;
         touch.is_swiping = 1;
         swipe_detected = 0;
     }
     
-    if (!touch.pressed && touch.is_swiping && !swipe_detected) {
+    // Detect swipe when touch ends
+    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_detected) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
         int distance = sqrt(dx*dx + dy*dy);
         
-        if (distance > 150) {
+        if (distance > 120) { // Reduced threshold for easier swiping
             swipe_detected = 1;
             
             if (abs(dy) > abs(dx)) {
@@ -464,6 +483,10 @@ void handle_gestures() {
                 }
             }
         }
+    }
+    
+    // Reset swiping when touch ends
+    if (!touch.pressed && touch.last_pressed) {
         touch.is_swiping = 0;
     }
 }
