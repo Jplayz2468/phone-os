@@ -61,7 +61,6 @@ typedef struct {
     int x, y, pressed, last_pressed;
     int start_x, start_y, is_swiping;
     uint64_t last_touch_time;
-    int touch_handled;
 } Touch;
 
 // Global variables
@@ -380,15 +379,11 @@ int point_near_rect(int px, int py, int x, int y, int w, int h) {
 }
 
 void handle_touch_input() {
-    // Only process new touches to avoid repeat triggers
-    int new_touch = touch.pressed && !touch.last_pressed;
-    if (!new_touch || touch.touch_handled) return;
-    
-    // Mark this touch as handled to prevent repeat processing
-    touch.touch_handled = 1;
+    // Process ANY touch that's currently active - no barriers
+    if (!touch.pressed) return;
     
     if (current_state == PIN_ENTRY) {
-        // PIN pad with proximity detection
+        // PIN pad with very generous proximity detection
         char pin_labels[] = "123456789*0#";
         int pad_start_x = screen_w/2 - 240;
         int pad_start_y = STATUS_HEIGHT + 250;
@@ -403,26 +398,30 @@ void handle_touch_input() {
             int center_x = btn_x + 80;
             int center_y = btn_y + 80;
             
-            if (point_near_circle(touch.x, touch.y, center_x, center_y, 70)) {
+            // Very generous hit area - 100px radius
+            int dx = touch.x - center_x;
+            int dy = touch.y - center_y;
+            if ((dx*dx + dy*dy) <= (100*100)) {
+                printf("PIN button %c pressed!\n", pin_labels[i]);
                 if (strlen(pin_code) < 4) {
                     char digit[2] = {pin_labels[i], 0};
                     strcat(pin_code, digit);
                     
                     if (strlen(pin_code) == 4) {
                         if (strcmp(pin_code, "1234") == 0) {
+                            printf("Correct PIN! Unlocking...\n");
                             current_state = HOME_SCREEN;
                         }
-                        // Clear PIN for next attempt
                         memset(pin_code, 0, sizeof(pin_code));
                     }
                 }
-                return; // Exit after handling touch
+                return;
             }
         }
     }
     
     else if (current_state == HOME_SCREEN) {
-        // App icons with proximity detection
+        // App icons with very generous hit areas
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
@@ -434,16 +433,19 @@ void handle_touch_input() {
             int icon_x = start_x + col * (ICON_SIZE + MARGIN);
             int icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
             
-            if (point_near_rect(touch.x, touch.y, icon_x, icon_y, ICON_SIZE, ICON_SIZE)) {
+            // Very generous hit area - 50px buffer on all sides
+            if (touch.x >= (icon_x - 50) && touch.x < (icon_x + ICON_SIZE + 50) &&
+                touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
+                printf("App %s launched!\n", apps[i].name);
                 current_app_id = i;
                 current_state = APP_SCREEN;
-                return; // Exit after handling touch
+                return;
             }
         }
     }
     
     else if (current_state == APP_SCREEN && current_app_id == 5) {
-        // Calculator buttons with proximity detection
+        // Calculator buttons with generous hit areas
         char calc_btns[] = "789+456-123*C0=";
         int calc_start_x = screen_w/2 - 320;
         int calc_start_y = STATUS_HEIGHT + 350;
@@ -454,9 +456,11 @@ void handle_touch_input() {
             int btn_x = calc_start_x + col * 160;
             int btn_y = calc_start_y + row * 120;
             
-            if (point_near_rect(touch.x, touch.y, btn_x, btn_y, 140, 100)) {
-                // Calculator button pressed - visual feedback or functionality could go here
-                return; // Exit after handling touch
+            // Very generous hit area - 40px buffer
+            if (touch.x >= (btn_x - 40) && touch.x < (btn_x + 140 + 40) &&
+                touch.y >= (btn_y - 40) && touch.y < (btn_y + 100 + 40)) {
+                printf("Calculator button %c pressed!\n", calc_btns[i]);
+                return;
             }
         }
     }
@@ -473,13 +477,13 @@ void handle_gestures() {
         swipe_handled = 0;
     }
     
-    // Detect swipe when touch ends (and it wasn't handled as a button press)
-    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled && !touch.touch_handled) {
+    // Detect swipe when touch ends
+    if (!touch.pressed && touch.last_pressed && touch.is_swiping && !swipe_handled) {
         int dx = touch.x - touch.start_x;
         int dy = touch.y - touch.start_y;
         int distance = sqrt(dx*dx + dy*dy);
         
-        if (distance > 100) { // Lower threshold for easier swiping
+        if (distance > 80) { // Very low threshold for easy swiping
             swipe_handled = 1;
             
             if (abs(dy) > abs(dx)) {
@@ -560,15 +564,11 @@ void read_touch_events() {
                 touch.pressed = tracking;
                 touch.x = raw_x;
                 touch.y = raw_y;
+                touch.last_touch_time = get_time_ms();
                 
-                // Reset touch handling flag when touch is released
-                if (!touch.pressed && touch.last_pressed) {
-                    touch.touch_handled = 0;
-                }
-                
-                // Set timestamp for new touches
+                // Debug: Print touch events
                 if (touch.pressed && !touch.last_pressed) {
-                    touch.last_touch_time = get_time_ms();
+                    printf("Touch started at (%d, %d)\n", touch.x, touch.y);
                 }
             }
         }
@@ -628,6 +628,7 @@ int main() {
     init_touch_devices();
     
     // Main loop
+    printf("Phone OS started - touch anywhere!\n");
     while (1) {
         read_touch_events();
         handle_touch_input();
@@ -639,6 +640,20 @@ int main() {
             case PIN_ENTRY: draw_pin_entry(backbuffer); break;
             case HOME_SCREEN: draw_home_screen(backbuffer); break;
             case APP_SCREEN: draw_app_screen(backbuffer); break;
+        }
+        
+        // Show touch position for debugging (red dot)
+        if (touch.pressed) {
+            for (int y = -10; y <= 10; y++) {
+                for (int x = -10; x <= 10; x++) {
+                    if (x*x + y*y <= 100) {
+                        int px = touch.x + x, py = touch.y + y;
+                        if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
+                            backbuffer[py * screen_w + px] = COLOR_RED;
+                        }
+                    }
+                }
+            }
         }
         
         // Copy to framebuffer
