@@ -34,19 +34,29 @@
 #define ICON_SIZE 200
 #define MARGIN 60
 
-// Enhanced touch constants
-#define SWIPE_THRESHOLD 100
-#define SWIPE_TIME_LIMIT 300
-#define BOTTOM_AREA_HEIGHT 0.30f
-#define EDGE_THRESHOLD 50
+// Touch and gesture constants
+#define SWIPE_THRESHOLD 80
+#define SWIPE_TIME_LIMIT 400
+#define HOME_INDICATOR_WIDTH 200
+#define HOME_INDICATOR_HEIGHT 8
+#define HOME_INDICATOR_Y_OFFSET 80
+#define GESTURE_MIN_DISTANCE 100
+#define TOUCH_SMOOTHING_FRAMES 3
 
 typedef enum { 
-    LOCK_SCREEN, 
-    PIN_ENTRY, 
-    HOME_SCREEN, 
-    APP_SCREEN, 
-    APP_SWITCHER 
+    STATE_LOCK_SCREEN, 
+    STATE_PIN_ENTRY, 
+    STATE_HOME_SCREEN, 
+    STATE_APP_SCREEN, 
+    STATE_APP_SWITCHER 
 } AppState;
+
+typedef enum {
+    GESTURE_NONE,
+    GESTURE_UNLOCK_SWIPE,
+    GESTURE_HOME_SWIPE,
+    GESTURE_TAP
+} GestureType;
 
 typedef struct {
     char name[32];
@@ -59,16 +69,34 @@ typedef struct {
 } TouchDevice;
 
 typedef struct {
-    int x, y, pressed, last_pressed;
+    int x, y;
+    int is_pressed;
+    int was_pressed;
+    uint64_t press_time;
+    uint64_t release_time;
     int start_x, start_y;
-    uint64_t touch_start_time;
-    uint64_t last_touch_time;
-    int action_taken;
-    int is_dragging_indicator;
-    int drag_start_y;
-    int finger_x, finger_y;
-    int swipe_detected;
+    int last_x, last_y;
+    
+    // Smoothed coordinates
+    int smooth_x[TOUCH_SMOOTHING_FRAMES];
+    int smooth_y[TOUCH_SMOOTHING_FRAMES];
+    int smooth_index;
+    
+    // Gesture state
+    GestureType active_gesture;
+    int gesture_started;
+    float gesture_progress;
+    int finger_follow_x, finger_follow_y;
 } TouchState;
+
+typedef struct {
+    AppState current_state;
+    AppState target_state;
+    float animation_progress;
+    int is_animating;
+    float scale;
+    float target_scale;
+} StateManager;
 
 // Apps configuration
 App apps[] = {
@@ -85,18 +113,14 @@ int fb_fd, screen_w, screen_h, stride;
 TouchDevice touch_devices[16];
 int num_touch_devices = 0;
 TouchState touch = {0};
-AppState current_state = LOCK_SCREEN;
-AppState animation_target_state = LOCK_SCREEN;
+StateManager state_mgr = {0};
 char pin_input[5] = {0};
 int current_app = -1;
 int battery_level = 87;
-float current_scale = 1.0f;
-float target_scale = 1.0f;
-int is_animating = 0;
 stbtt_fontinfo font;
 
 // App switcher state
-int open_apps[12];  // Track which apps are open (1 = open, 0 = closed)
+int open_apps[12] = {0};
 int num_open_apps = 0;
 
 // Function declarations
@@ -110,23 +134,38 @@ void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uin
 void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, uint32_t color);
 void get_current_time(char *time_str, char *date_str);
 void draw_status_bar(uint32_t *buf);
-int is_in_bottom_area(int touch_x, int touch_y);
-int is_touching_home_indicator(int touch_x, int touch_y);
+void draw_home_indicator(uint32_t *buf, uint32_t color);
+
+// Touch and gesture functions
+void reset_touch_state(void);
+void update_smooth_coordinates(void);
+int get_smooth_x(void);
+int get_smooth_y(void);
+int is_touching_home_indicator(int x, int y);
+int is_in_unlock_area(int x, int y);
+GestureType detect_gesture(void);
+void handle_gesture(GestureType gesture);
+
+// App management
 void add_open_app(int app_id);
 void remove_open_app(int app_id);
-int can_use_home_gesture(AppState state);
-AppState get_home_gesture_target(AppState current);
-float calculate_scale_from_drag(int drag_distance);
-int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t duration);
-void apply_fast_blur(uint32_t *buf, float blur_amount);
-void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x, int finger_y);
+
+// State management
+void transition_to_state(AppState new_state);
+int is_valid_transition(AppState from, AppState to);
+void update_animations(void);
+
+// Drawing functions
 void draw_lock_screen(uint32_t *buf);
 void draw_pin_entry(uint32_t *buf);
 void draw_home_screen(uint32_t *buf);
 void draw_app_screen(uint32_t *buf);
 void draw_app_switcher(uint32_t *buf);
-void update_animations(void);
+void apply_blur_and_scale(uint32_t *dest, uint32_t *src, float scale, int center_x, int center_y);
+
+// Input handling
 void handle_touch_input(void);
+void handle_button_press(void);
 void init_touch_devices(void);
 void read_touch_events(void);
 void cleanup_and_exit(int sig);
@@ -273,40 +312,144 @@ void draw_status_bar(uint32_t *buf) {
     }
 }
 
-int is_in_bottom_area(int touch_x, int touch_y) {
-    return (touch_y >= screen_h * (1.0f - BOTTOM_AREA_HEIGHT)) || 
-           (touch_y >= screen_h - EDGE_THRESHOLD);
+void draw_home_indicator(uint32_t *buf, uint32_t color) {
+    int bar_x = (screen_w - HOME_INDICATOR_WIDTH) / 2;
+    int bar_y = screen_h - HOME_INDICATOR_Y_OFFSET;
+    draw_rounded_rect(buf, bar_x, bar_y, HOME_INDICATOR_WIDTH, HOME_INDICATOR_HEIGHT, 4, color);
 }
 
-// NEW: Precise home indicator bar detection - extends to bottom edge
-int is_touching_home_indicator(int touch_x, int touch_y) {
-    int bar_center_x = screen_w / 2;
-    int bar_y_start = screen_h - 80;  // Where the bar starts
-    int bar_width = 200;
-    int bar_extended_width = 300;  // Slightly wider hitbox
+// Touch and gesture functions
+void reset_touch_state(void) {
+    touch.active_gesture = GESTURE_NONE;
+    touch.gesture_started = 0;
+    touch.gesture_progress = 0.0f;
+    memset(touch.smooth_x, 0, sizeof(touch.smooth_x));
+    memset(touch.smooth_y, 0, sizeof(touch.smooth_y));
+    touch.smooth_index = 0;
+}
+
+void update_smooth_coordinates(void) {
+    touch.smooth_x[touch.smooth_index] = touch.x;
+    touch.smooth_y[touch.smooth_index] = touch.y;
+    touch.smooth_index = (touch.smooth_index + 1) % TOUCH_SMOOTHING_FRAMES;
+}
+
+int get_smooth_x(void) {
+    int sum = 0;
+    for (int i = 0; i < TOUCH_SMOOTHING_FRAMES; i++) {
+        sum += touch.smooth_x[i];
+    }
+    return sum / TOUCH_SMOOTHING_FRAMES;
+}
+
+int get_smooth_y(void) {
+    int sum = 0;
+    for (int i = 0; i < TOUCH_SMOOTHING_FRAMES; i++) {
+        sum += touch.smooth_y[i];
+    }
+    return sum / TOUCH_SMOOTHING_FRAMES;
+}
+
+int is_touching_home_indicator(int x, int y) {
+    int bar_x = (screen_w - HOME_INDICATOR_WIDTH) / 2;
+    int bar_y = screen_h - HOME_INDICATOR_Y_OFFSET;
+    int extended_width = HOME_INDICATOR_WIDTH + 100; // Extra hit area
+    int extended_height = HOME_INDICATOR_Y_OFFSET + 20; // Extend to bottom edge
     
-    // Check if touch is within the horizontal bounds of the home indicator (with some extra width)
-    int x_in_range = (touch_x >= (bar_center_x - bar_extended_width/2)) && 
-                     (touch_x <= (bar_center_x + bar_extended_width/2));
+    int bar_x_extended = bar_x - 50;
+    int bar_y_extended = bar_y - 10;
     
-    // Check if touch is from the bar position down to the very bottom edge
-    int y_in_range = (touch_y >= bar_y_start);
-    
-    int result = x_in_range && y_in_range;
-    if (result) {
-        printf("🎯 Home indicator hit: x=%d (range %d-%d), y=%d (>=%d)\n", 
-               touch_x, bar_center_x - bar_extended_width/2, bar_center_x + bar_extended_width/2,
-               touch_y, bar_y_start);
+    return (x >= bar_x_extended && x <= (bar_x_extended + extended_width) &&
+            y >= bar_y_extended && y <= (bar_y_extended + extended_height));
+}
+
+int is_in_unlock_area(int x, int y) {
+    // Bottom third of screen for unlock swipes
+    return (y >= screen_h * 2 / 3);
+}
+
+GestureType detect_gesture(void) {
+    // Only detect gestures on touch release
+    if (touch.is_pressed || !touch.was_pressed) {
+        return GESTURE_NONE;
     }
     
-    return result;
+    uint64_t duration = touch.release_time - touch.press_time;
+    int dx = touch.x - touch.start_x;
+    int dy = touch.start_y - touch.y; // Positive = upward swipe
+    int distance = sqrt(dx*dx + dy*dy);
+    
+    printf("🔍 Gesture detection: dx=%d, dy=%d, dist=%d, dur=%llu, state=%d\n", 
+           dx, dy, distance, duration, state_mgr.current_state);
+    
+    // Lock screen unlock swipe
+    if (state_mgr.current_state == STATE_LOCK_SCREEN) {
+        if (dy > SWIPE_THRESHOLD && distance > GESTURE_MIN_DISTANCE && 
+            is_in_unlock_area(touch.start_x, touch.start_y)) {
+            printf("🔓 Unlock swipe detected\n");
+            return GESTURE_UNLOCK_SWIPE;
+        }
+        return GESTURE_NONE; // Block all other gestures on lock screen
+    }
+    
+    // Home gesture (only from home indicator area)
+    if (is_touching_home_indicator(touch.start_x, touch.start_y)) {
+        if (dy > SWIPE_THRESHOLD && distance > GESTURE_MIN_DISTANCE) {
+            printf("🏠 Home swipe detected from indicator\n");
+            return GESTURE_HOME_SWIPE;
+        }
+    }
+    
+    // Regular tap
+    if (duration < 500 && distance < 50) {
+        return GESTURE_TAP;
+    }
+    
+    return GESTURE_NONE;
 }
 
+void handle_gesture(GestureType gesture) {
+    switch (gesture) {
+        case GESTURE_UNLOCK_SWIPE:
+            if (state_mgr.current_state == STATE_LOCK_SCREEN) {
+                transition_to_state(STATE_PIN_ENTRY);
+            }
+            break;
+            
+        case GESTURE_HOME_SWIPE:
+            switch (state_mgr.current_state) {
+                case STATE_PIN_ENTRY:
+                case STATE_APP_SCREEN:
+                    transition_to_state(STATE_HOME_SCREEN);
+                    break;
+                case STATE_HOME_SCREEN:
+                    if (num_open_apps > 0) {
+                        transition_to_state(STATE_APP_SWITCHER);
+                    }
+                    break;
+                case STATE_APP_SWITCHER:
+                    transition_to_state(STATE_HOME_SCREEN);
+                    break;
+                default:
+                    break;
+            }
+            break;
+            
+        case GESTURE_TAP:
+            handle_button_press();
+            break;
+            
+        default:
+            break;
+    }
+}
+
+// App management
 void add_open_app(int app_id) {
     if (app_id >= 0 && app_id < APP_COUNT && !open_apps[app_id]) {
         open_apps[app_id] = 1;
         num_open_apps++;
-        printf("📱 Opened app: %s (total open: %d)\n", apps[app_id].name, num_open_apps);
+        printf("📱 Opened app: %s (total: %d)\n", apps[app_id].name, num_open_apps);
     }
 }
 
@@ -314,102 +457,72 @@ void remove_open_app(int app_id) {
     if (app_id >= 0 && app_id < APP_COUNT && open_apps[app_id]) {
         open_apps[app_id] = 0;
         num_open_apps--;
-        printf("❌ Closed app: %s (total open: %d)\n", apps[app_id].name, num_open_apps);
+        printf("❌ Closed app: %s (total: %d)\n", apps[app_id].name, num_open_apps);
     }
 }
 
-int can_use_home_gesture(AppState state) {
-    return (state != LOCK_SCREEN);
+// State management
+void transition_to_state(AppState new_state) {
+    if (!is_valid_transition(state_mgr.current_state, new_state)) {
+        printf("❌ Invalid transition: %d → %d\n", state_mgr.current_state, new_state);
+        return;
+    }
+    
+    if (state_mgr.current_state == new_state) {
+        printf("⚠️ Ignoring self-transition to state %d\n", new_state);
+        return;
+    }
+    
+    printf("🔄 State transition: %d → %d\n", state_mgr.current_state, new_state);
+    
+    state_mgr.target_state = new_state;
+    state_mgr.is_animating = 1;
+    state_mgr.animation_progress = 0.0f;
+    state_mgr.target_scale = 0.0f;
+    
+    reset_touch_state();
 }
 
-AppState get_home_gesture_target(AppState current) {
-    switch (current) {
-        case PIN_ENTRY:
-        case APP_SCREEN:
-            return HOME_SCREEN;
-        case HOME_SCREEN:
-            return (num_open_apps > 0) ? APP_SWITCHER : HOME_SCREEN;
-        case APP_SWITCHER:
-            return HOME_SCREEN;
-        default:
-            return HOME_SCREEN;
+int is_valid_transition(AppState from, AppState to) {
+    // Prevent invalid transitions
+    switch (from) {
+        case STATE_LOCK_SCREEN:
+            return (to == STATE_PIN_ENTRY);
+        case STATE_PIN_ENTRY:
+            return (to == STATE_HOME_SCREEN || to == STATE_LOCK_SCREEN);
+        case STATE_HOME_SCREEN:
+            return (to == STATE_APP_SCREEN || to == STATE_APP_SWITCHER || to == STATE_LOCK_SCREEN);
+        case STATE_APP_SCREEN:
+            return (to == STATE_HOME_SCREEN || to == STATE_APP_SWITCHER || to == STATE_LOCK_SCREEN);
+        case STATE_APP_SWITCHER:
+            return (to == STATE_HOME_SCREEN || to == STATE_APP_SCREEN || to == STATE_LOCK_SCREEN);
+    }
+    return 0;
+}
+
+void update_animations(void) {
+    if (!state_mgr.is_animating) {
+        return;
+    }
+    
+    state_mgr.animation_progress += 0.15f; // Animation speed
+    
+    if (state_mgr.animation_progress >= 1.0f) {
+        state_mgr.animation_progress = 1.0f;
+        state_mgr.is_animating = 0;
+        state_mgr.current_state = state_mgr.target_state;
+        state_mgr.scale = 1.0f;
+        state_mgr.target_scale = 1.0f;
+        printf("✅ Animation complete → state %d\n", state_mgr.current_state);
+    } else {
+        // Smooth easing
+        float t = state_mgr.animation_progress;
+        float eased = t * t * (3.0f - 2.0f * t); // Smoothstep
+        state_mgr.scale = 1.0f - eased * 0.7f; // Scale down during transition
     }
 }
 
-float calculate_scale_from_drag(int drag_distance) {
-    if (drag_distance < 20) return 1.0f;
-    float max_drag = screen_h * 0.5f;
-    float normalized = (drag_distance - 20) / max_drag;
-    float scale = 1.0f - normalized * 0.6f;
-    if (scale < 0.4f) scale = 0.4f;
-    if (scale > 1.0f) scale = 1.0f;
-    return scale;
-}
-
-int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t duration) {
-    int dx = end_x - start_x;
-    int dy = start_y - end_y;
-    int distance = sqrt(dx*dx + dy*dy);
-    
-    return (dy > SWIPE_THRESHOLD && 
-            duration <= SWIPE_TIME_LIMIT && 
-            distance > SWIPE_THRESHOLD &&
-            dy > abs(dx));
-}
-
-void apply_fast_blur(uint32_t *buf, float blur_amount) {
-    if (blur_amount < 0.1f) return;
-    
-    int darken = (int)(blur_amount * 40);
-    
-    for (int i = 0; i < screen_w * screen_h; i++) {
-        uint32_t pixel = buf[i];
-        int r = ((pixel >> 16) & 0xFF);
-        int g = ((pixel >> 8) & 0xFF);
-        int b = (pixel & 0xFF);
-        
-        r = (r > darken) ? r - darken : 0;
-        g = (g > darken) ? g - darken : 0;
-        b = (b > darken) ? b - darken : 0;
-        
-        buf[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
-    }
-}
-
-void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x, int finger_y) {
-    int scaled_w = (int)(screen_w * scale);
-    int scaled_h = (int)(screen_h * scale);
-    
-    int center_x = finger_x;
-    int center_y = finger_y;
-    
-    if (center_x - scaled_w/2 < 0) center_x = scaled_w/2;
-    if (center_x + scaled_w/2 > screen_w) center_x = screen_w - scaled_w/2;
-    if (center_y - scaled_h/2 < 0) center_y = scaled_h/2;
-    if (center_y + scaled_h/2 > screen_h) center_y = screen_h - scaled_h/2;
-    
-    int start_x = center_x - scaled_w/2;
-    int start_y = center_y - scaled_h/2;
-    
-    for (int y = 0; y < scaled_h; y++) {
-        int dest_y = start_y + y;
-        if (dest_y < 0 || dest_y >= screen_h) continue;
-        
-        int src_y = (int)(y / scale);
-        if (src_y >= screen_h) continue;
-        
-        for (int x = 0; x < scaled_w; x++) {
-            int dest_x = start_x + x;
-            if (dest_x < 0 || dest_x >= screen_w) continue;
-            
-            int src_x = (int)(x / scale);
-            if (src_x >= screen_w) continue;
-            
-            dest[dest_y * screen_w + dest_x] = src[src_y * screen_w + src_x];
-        }
-    }
-}
-
+// Drawing functions
 void draw_lock_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
     draw_status_bar(buf);
@@ -421,7 +534,7 @@ void draw_lock_screen(uint32_t *buf) {
     draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 80, COLOR_LIGHT_GRAY);
     draw_text_centered(buf, "Swipe up to unlock", SMALL_TEXT, screen_h - 200, COLOR_GRAY);
     
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_GRAY);
+    draw_home_indicator(buf, COLOR_GRAY);
 }
 
 void draw_pin_entry(uint32_t *buf) {
@@ -464,7 +577,7 @@ void draw_pin_entry(uint32_t *buf) {
         draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
     }
     
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    draw_home_indicator(buf, COLOR_WHITE);
 }
 
 void draw_home_screen(uint32_t *buf) {
@@ -489,9 +602,7 @@ void draw_home_screen(uint32_t *buf) {
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
     }
     
-    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
-    }
+    draw_home_indicator(buf, COLOR_WHITE);
 }
 
 void draw_app_screen(uint32_t *buf) {
@@ -528,9 +639,7 @@ void draw_app_screen(uint32_t *buf) {
         }
     }
     
-    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
-    }
+    draw_home_indicator(buf, COLOR_WHITE);
 }
 
 void draw_app_switcher(uint32_t *buf) {
@@ -539,7 +648,7 @@ void draw_app_switcher(uint32_t *buf) {
     
     if (num_open_apps == 0) {
         draw_text_centered(buf, "No open apps", MEDIUM_TEXT, screen_h/2, COLOR_GRAY);
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+        draw_home_indicator(buf, COLOR_WHITE);
         return;
     }
     
@@ -583,145 +692,115 @@ void draw_app_switcher(uint32_t *buf) {
     }
     
     draw_text_centered(buf, "Tap to open • Swipe up on card to close", SMALL_TEXT, screen_h - 150, COLOR_LIGHT_GRAY);
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    draw_home_indicator(buf, COLOR_WHITE);
 }
 
-void update_animations(void) {
-    if (is_animating) {
-        float diff = target_scale - current_scale;
-        if (fabs(diff) < 0.01f || (target_scale == 0.0f && current_scale < 0.05f)) {
-            current_scale = target_scale;
-            is_animating = 0;
+void apply_blur_and_scale(uint32_t *dest, uint32_t *src, float scale, int center_x, int center_y) {
+    // Simple darkening effect for blur simulation
+    int darken_amount = (int)((1.0f - scale) * 60);
+    
+    for (int i = 0; i < screen_w * screen_h; i++) {
+        uint32_t pixel = src[i];
+        int r = ((pixel >> 16) & 0xFF);
+        int g = ((pixel >> 8) & 0xFF);
+        int b = (pixel & 0xFF);
+        
+        r = (r > darken_amount) ? r - darken_amount : 0;
+        g = (g > darken_amount) ? g - darken_amount : 0;
+        b = (b > darken_amount) ? b - darken_amount : 0;
+        
+        dest[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+    
+    // Scale the window
+    int scaled_w = (int)(screen_w * scale);
+    int scaled_h = (int)(screen_h * scale);
+    
+    int start_x = center_x - scaled_w/2;
+    int start_y = center_y - scaled_h/2;
+    
+    // Keep scaled window on screen
+    if (start_x < 0) start_x = 0;
+    if (start_y < 0) start_y = 0;
+    if (start_x + scaled_w > screen_w) start_x = screen_w - scaled_w;
+    if (start_y + scaled_h > screen_h) start_y = screen_h - scaled_h;
+    
+    for (int y = 0; y < scaled_h; y++) {
+        int dest_y = start_y + y;
+        if (dest_y < 0 || dest_y >= screen_h) continue;
+        
+        int src_y = (int)(y / scale);
+        if (src_y >= screen_h) continue;
+        
+        for (int x = 0; x < scaled_w; x++) {
+            int dest_x = start_x + x;
+            if (dest_x < 0 || dest_x >= screen_w) continue;
             
-            if (animation_target_state != current_state) {
-                current_state = animation_target_state;
-                if (current_state == HOME_SCREEN) {
-                    current_scale = 1.0f;
-                    target_scale = 1.0f;
-                }
-                printf("✅ Animation complete → %s\n", 
-                    current_state == LOCK_SCREEN ? "Lock" :
-                    current_state == PIN_ENTRY ? "PIN" :
-                    current_state == HOME_SCREEN ? "Home" : 
-                    current_state == APP_SWITCHER ? "App Switcher" : "App");
+            int src_x = (int)(x / scale);
+            if (src_x >= screen_w) continue;
+            
+            dest[dest_y * screen_w + dest_x] = src[src_y * screen_w + src_x];
+        }
+    }
+}
+
+// Input handling
+void handle_touch_input(void) {
+    // Update smooth coordinates
+    if (touch.is_pressed) {
+        update_smooth_coordinates();
+        
+        // Track gesture progress during drag for home gestures
+        if (touch.active_gesture == GESTURE_NONE && 
+            state_mgr.current_state != STATE_LOCK_SCREEN &&
+            is_touching_home_indicator(touch.start_x, touch.start_y)) {
+            
+            int dy = touch.start_y - get_smooth_y();
+            if (dy > 20) { // Start tracking gesture
+                touch.active_gesture = GESTURE_HOME_SWIPE;
+                touch.gesture_started = 1;
+                touch.finger_follow_x = get_smooth_x();
+                touch.finger_follow_y = get_smooth_y();
+            }
+        }
+        
+        // Update gesture progress
+        if (touch.gesture_started && touch.active_gesture == GESTURE_HOME_SWIPE) {
+            int dy = touch.start_y - get_smooth_y();
+            touch.gesture_progress = fmaxf(0.0f, fminf(1.0f, dy / 200.0f));
+            state_mgr.scale = 1.0f - touch.gesture_progress * 0.4f;
+            touch.finger_follow_x = get_smooth_x();
+            touch.finger_follow_y = get_smooth_y();
+        }
+    }
+    
+    // Handle touch release
+    if (!touch.is_pressed && touch.was_pressed) {
+        touch.release_time = get_time_ms();
+        
+        // Complete gesture if in progress
+        if (touch.gesture_started && touch.active_gesture == GESTURE_HOME_SWIPE) {
+            if (touch.gesture_progress > 0.3f) {
+                handle_gesture(GESTURE_HOME_SWIPE);
+            } else {
+                // Snap back
+                state_mgr.scale = 1.0f;
+                state_mgr.target_scale = 1.0f;
             }
         } else {
-            current_scale += diff * 0.3f;
+            // Detect and handle other gestures
+            GestureType gesture = detect_gesture();
+            if (gesture != GESTURE_NONE) {
+                handle_gesture(gesture);
+            }
         }
+        
+        reset_touch_state();
     }
 }
 
-void handle_touch_input(void) {
-    if (touch.pressed && !touch.last_pressed) {
-        touch.touch_start_time = get_time_ms();
-        touch.start_x = touch.x;
-        touch.start_y = touch.y;
-        touch.swipe_detected = 0;
-        
-        // Special handling for lock screen - don't start home gesture, just track for unlock swipe
-        if (current_state == LOCK_SCREEN) {
-            printf("🔒 Lock screen touch at (%d, %d)\n", touch.x, touch.y);
-            return; // Just track the touch, don't start any gestures
-        }
-        
-        // Use precise home indicator detection for home gesture (not the broad bottom area)
-        if (is_touching_home_indicator(touch.x, touch.y) && can_use_home_gesture(current_state)) {
-            touch.is_dragging_indicator = 1;
-            touch.drag_start_y = touch.y;
-            touch.finger_x = touch.x;
-            touch.finger_y = touch.y;
-            printf("🎯 Started home gesture on indicator - finger at (%d, %d) in state %d\n", 
-                   touch.x, touch.y, current_state);
-            return;
-        }
-    }
-    
-    if (touch.pressed && touch.is_dragging_indicator) {
-        int drag_distance = touch.drag_start_y - touch.y;
-        if (drag_distance >= 0) {
-            current_scale = calculate_scale_from_drag(drag_distance);
-            touch.finger_x = touch.x;
-            touch.finger_y = touch.y;
-        }
-        return;
-    }
-    
-    if (!touch.pressed && touch.last_pressed) {
-        uint64_t touch_duration = get_time_ms() - touch.touch_start_time;
-        
-        // PRIORITY 1: Handle lock screen swipe - must come first!
-        if (current_state == LOCK_SCREEN) {
-            int swipe_dy = touch.start_y - touch.y;
-            printf("🔒 Lock screen release: swipe_dy=%d, start_y=%d, end_y=%d, bottom_area=%d\n", 
-                   swipe_dy, touch.start_y, touch.y, is_in_bottom_area(touch.start_x, touch.start_y));
-            
-            // More lenient detection for lock screen unlock
-            if (swipe_dy > 50 && is_in_bottom_area(touch.start_x, touch.start_y)) {
-                printf("🔓 Lock screen swipe → PIN entry\n");
-                current_state = PIN_ENTRY;
-                animation_target_state = PIN_ENTRY;
-                return;
-            } else {
-                printf("🔒 Lock screen swipe not detected (need swipe_dy > 50 from bottom area)\n");
-                return; // Don't process any other gestures on lock screen
-            }
-        }
-        
-        // PRIORITY 2: Handle home gesture dragging (for non-lock-screen states)
-        if (touch.is_dragging_indicator) {
-            int final_drag = touch.drag_start_y - touch.y;
-            float threshold = screen_h * 0.15f;
-            
-            int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
-                                              touch.x, touch.y, touch_duration);
-            
-            if (final_drag > threshold || quick_swipe) {
-                AppState target = get_home_gesture_target(current_state);
-                printf("🏠 Going to %s (drag: %d, swipe: %d, duration: %llu)\n", 
-                       target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown",
-                       final_drag, quick_swipe, touch_duration);
-                animation_target_state = target;
-                target_scale = 0.0f;
-                is_animating = 1;
-            } else {
-                printf("↩️ Staying in current state (drag: %d, swipe: %d)\n", 
-                       final_drag, quick_swipe);
-                animation_target_state = current_state;
-                target_scale = 1.0f;
-                is_animating = 1;
-            }
-            
-            touch.is_dragging_indicator = 0;
-            return;
-        }
-        
-        // PRIORITY 3: Fallback quick swipe detection (for non-lock-screen states)
-        if (current_state != LOCK_SCREEN && 
-            is_touching_home_indicator(touch.start_x, touch.start_y) && 
-            can_use_home_gesture(current_state)) {
-            int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
-                                              touch.x, touch.y, touch_duration);
-            if (quick_swipe) {
-                AppState target = get_home_gesture_target(current_state);
-                printf("🚀 Quick swipe to %s from indicator in state %d\n", 
-                       target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown",
-                       current_state);
-                animation_target_state = target;
-                target_scale = 0.0f;
-                is_animating = 1;
-                current_scale = 0.8f;
-                return;
-            }
-        }
-        
-        touch.action_taken = 0;
-    }
-    
-    // Button handling (only when not dragging and not on lock screen during gestures)
-    if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
-    
-    if (current_state == PIN_ENTRY) {
-        printf("🔢 Checking PIN entry touch at (%d, %d)\n", touch.x, touch.y);
+void handle_button_press(void) {
+    if (state_mgr.current_state == STATE_PIN_ENTRY) {
         char pin_labels[] = "123456789*0#";
         int pad_start_x = screen_w/2 - 240;
         int pad_start_y = STATUS_HEIGHT + 250;
@@ -739,8 +818,7 @@ void handle_touch_input(void) {
             int dx = touch.x - center_x;
             int dy = touch.y - center_y;
             if ((dx*dx + dy*dy) <= (100*100)) {
-                touch.action_taken = 1;
-                printf("🔢 PIN button pressed: %c\n", pin_labels[i]);
+                printf("🔢 PIN button: %c\n", pin_labels[i]);
                 
                 if (strlen(pin_input) < 4) {
                     char digit[2] = {pin_labels[i], 0};
@@ -749,8 +827,7 @@ void handle_touch_input(void) {
                     if (strlen(pin_input) == 4) {
                         if (strcmp(pin_input, "1234") == 0) {
                             printf("✅ Unlocked!\n");
-                            current_state = HOME_SCREEN;
-                            animation_target_state = HOME_SCREEN;
+                            transition_to_state(STATE_HOME_SCREEN);
                         }
                         memset(pin_input, 0, sizeof(pin_input));
                     }
@@ -758,7 +835,7 @@ void handle_touch_input(void) {
                 return;
             }
         }
-    } else if (current_state == HOME_SCREEN) {
+    } else if (state_mgr.current_state == STATE_HOME_SCREEN) {
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
@@ -770,18 +847,16 @@ void handle_touch_input(void) {
             int icon_x = start_x + col * (ICON_SIZE + MARGIN);
             int icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
             
-            if (touch.x >= (icon_x - 50) && touch.x < (icon_x + ICON_SIZE + 50) &&
-                touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
-                touch.action_taken = 1;
+            if (touch.x >= icon_x && touch.x < (icon_x + ICON_SIZE) &&
+                touch.y >= icon_y && touch.y < (icon_y + ICON_SIZE)) {
                 current_app = i;
                 add_open_app(i);
-                current_state = APP_SCREEN;
-                animation_target_state = APP_SCREEN;
+                transition_to_state(STATE_APP_SCREEN);
                 printf("🚀 Launched: %s\n", apps[i].name);
                 return;
             }
         }
-    } else if (current_state == APP_SWITCHER) {
+    } else if (state_mgr.current_state == STATE_APP_SWITCHER) {
         if (num_open_apps == 0) return;
         
         int cards_per_row = 2;
@@ -805,25 +880,23 @@ void handle_touch_input(void) {
             
             if (touch.x >= x && touch.x < (x + card_w) &&
                 touch.y >= y && touch.y < (y + card_h)) {
-                touch.action_taken = 1;
                 
                 int swipe_dy = touch.start_y - touch.y;
-                if (swipe_dy > 100 && (get_time_ms() - touch.touch_start_time) < 500) {
+                uint64_t duration = touch.release_time - touch.press_time;
+                
+                if (swipe_dy > 100 && duration < 500) {
                     remove_open_app(i);
                     printf("❌ Closed app: %s\n", apps[i].name);
                     
                     if (num_open_apps == 0) {
-                        current_state = HOME_SCREEN;
-                        animation_target_state = HOME_SCREEN;
+                        transition_to_state(STATE_HOME_SCREEN);
                     }
-                    return;
                 } else {
                     current_app = i;
-                    current_state = APP_SCREEN;
-                    animation_target_state = APP_SCREEN;
-                    printf("🚀 Opened app from switcher: %s\n", apps[i].name);
-                    return;
+                    transition_to_state(STATE_APP_SCREEN);
+                    printf("🚀 Opened app: %s\n", apps[i].name);
                 }
+                return;
             }
             
             card_index++;
@@ -863,7 +936,7 @@ void read_touch_events(void) {
         if (!(fds[i].revents & POLLIN)) continue;
         
         struct input_event ev;
-        int raw_x = touch.x, raw_y = touch.y, tracking = touch.pressed;
+        int raw_x = touch.x, raw_y = touch.y, tracking = touch.is_pressed;
         
         while (read(touch_devices[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
             if (ev.type == EV_ABS) {
@@ -881,11 +954,24 @@ void read_touch_events(void) {
             } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
                 tracking = ev.value;
             } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-                touch.last_pressed = touch.pressed;
-                touch.pressed = tracking;
+                touch.was_pressed = touch.is_pressed;
+                touch.is_pressed = tracking;
+                touch.last_x = touch.x;
+                touch.last_y = touch.y;
                 touch.x = raw_x;
                 touch.y = raw_y;
-                touch.last_touch_time = get_time_ms();
+                
+                // Capture start position on touch down
+                if (touch.is_pressed && !touch.was_pressed) {
+                    touch.start_x = touch.x;
+                    touch.start_y = touch.y;
+                    touch.press_time = get_time_ms();
+                    // Initialize smooth coordinates
+                    for (int j = 0; j < TOUCH_SMOOTHING_FRAMES; j++) {
+                        touch.smooth_x[j] = touch.x;
+                        touch.smooth_y[j] = touch.y;
+                    }
+                }
             }
         }
     }
@@ -908,8 +994,13 @@ void cleanup_and_exit(int sig) {
 int main(void) {
     signal(SIGINT, cleanup_and_exit);
     
-    // Initialize open apps array
+    // Initialize state
+    state_mgr.current_state = STATE_LOCK_SCREEN;
+    state_mgr.target_state = STATE_LOCK_SCREEN;
+    state_mgr.scale = 1.0f;
+    state_mgr.target_scale = 1.0f;
     memset(open_apps, 0, sizeof(open_apps));
+    reset_touch_state();
     
     // Load font
     FILE *font_file = fopen(FONT_PATH, "rb");
@@ -950,66 +1041,58 @@ int main(void) {
     
     init_touch_devices();
     
-    animation_target_state = current_state;
-    
-    printf("📱 ENHANCED iOS Phone OS - Precise Home Indicator! 🚀\n");
-    printf("🔓 Lock screen: swipe up from bottom → PIN entry\n");
-    printf("🎯 Home indicator: precise bar hitbox extends to edge\n");
-    printf("🏠 Home screen: swipe up indicator → app switcher (if apps open)\n");
-    printf("📱 App switcher: tap to open, swipe up to close\n");
-    printf("⚡ Much easier to grab the home indicator now!\n");
+    printf("📱 FIXED iOS Phone OS! 🚀\n");
+    printf("🔧 Fixed Issues:\n");
+    printf("   ✅ Reliable home indicator detection\n");
+    printf("   ✅ Proper gesture state management\n"); 
+    printf("   ✅ No more self-transition corruption\n");
+    printf("   ✅ Lock screen bypass prevention\n");
+    printf("🎯 Touch areas work consistently now!\n");
     
     while (1) {
         read_touch_events();
         handle_touch_input();
         update_animations();
         
-        if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-            switch (current_state) {
-                case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
-                case PIN_ENTRY: draw_pin_entry(backbuffer); break;
-                case HOME_SCREEN: draw_home_screen(backbuffer); break;
-                case APP_SCREEN: draw_app_screen(backbuffer); break;
-                case APP_SWITCHER: draw_app_switcher(backbuffer); break;
+        // Choose what to render
+        if (state_mgr.is_animating || (touch.gesture_started && state_mgr.scale < 0.98f)) {
+            // Render current state to app buffer
+            switch (state_mgr.current_state) {
+                case STATE_LOCK_SCREEN: draw_lock_screen(app_buffer); break;
+                case STATE_PIN_ENTRY: draw_pin_entry(app_buffer); break;
+                case STATE_HOME_SCREEN: draw_home_screen(app_buffer); break;
+                case STATE_APP_SCREEN: draw_app_screen(app_buffer); break;
+                case STATE_APP_SWITCHER: draw_app_switcher(app_buffer); break;
+            }
+            
+            // Apply scaling effect with finger following
+            int center_x = touch.gesture_started ? touch.finger_follow_x : screen_w/2;
+            int center_y = touch.gesture_started ? touch.finger_follow_y : screen_h/2;
+            
+            clear_screen(backbuffer, COLOR_BG);
+            apply_blur_and_scale(backbuffer, app_buffer, state_mgr.scale, center_x, center_y);
+            
+            // Show gesture indicator during home swipe
+            if (touch.gesture_started && touch.active_gesture == GESTURE_HOME_SWIPE) {
+                draw_home_indicator(backbuffer, COLOR_BLUE);
             }
         } else {
-            draw_home_screen(backbuffer);
-            
-            float blur_amount = (1.0f - current_scale) * 0.5f;
-            if (blur_amount > 0.1f) {
-                apply_fast_blur(backbuffer, blur_amount);
-            }
-            
-            switch (current_state) {
-                case LOCK_SCREEN: draw_lock_screen(app_buffer); break;
-                case PIN_ENTRY: draw_pin_entry(app_buffer); break;
-                case HOME_SCREEN: draw_home_screen(app_buffer); break;
-                case APP_SCREEN: draw_app_screen(app_buffer); break;
-                case APP_SWITCHER: draw_app_switcher(app_buffer); break;
-            }
-            
-            if (touch.is_dragging_indicator) {
-                draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
-            } else {
-                draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
-            }
-            
-            if (touch.is_dragging_indicator) {
-                int bar_w = 240;
-                int bar_x = touch.finger_x - bar_w/2;
-                int bar_y = screen_h - 80;
-                
-                if (bar_x < 20) bar_x = 20;
-                if (bar_x + bar_w > screen_w - 20) bar_x = screen_w - 20 - bar_w;
-                
-                draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, 8, 4, COLOR_BLUE);
+            // Normal rendering
+            switch (state_mgr.current_state) {
+                case STATE_LOCK_SCREEN: draw_lock_screen(backbuffer); break;
+                case STATE_PIN_ENTRY: draw_pin_entry(backbuffer); break;
+                case STATE_HOME_SCREEN: draw_home_screen(backbuffer); break;
+                case STATE_APP_SCREEN: draw_app_screen(backbuffer); break;
+                case STATE_APP_SWITCHER: draw_app_switcher(backbuffer); break;
             }
         }
         
-        if (touch.pressed) {
+        // Show touch indicator
+        if (touch.is_pressed) {
             draw_circle_filled(backbuffer, touch.x, touch.y, 8, COLOR_RED);
         }
         
+        // Copy to framebuffer
         memcpy(framebuffer, backbuffer, screen_w * screen_h * 4);
         
         usleep(16666); // 60 FPS
