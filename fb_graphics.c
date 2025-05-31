@@ -35,12 +35,18 @@
 #define MARGIN 60
 
 // Enhanced touch constants
-#define SWIPE_THRESHOLD 100      // Minimum distance for swipe detection
-#define SWIPE_TIME_LIMIT 300     // Maximum time for quick swipe (ms)
-#define BOTTOM_AREA_HEIGHT 0.30f // Bottom 30% of screen for home gesture
-#define EDGE_THRESHOLD 50        // Pixels from bottom edge to detect "below screen" gestures
+#define SWIPE_THRESHOLD 100
+#define SWIPE_TIME_LIMIT 300
+#define BOTTOM_AREA_HEIGHT 0.30f
+#define EDGE_THRESHOLD 50
 
-typedef enum { LOCK_SCREEN, PIN_ENTRY, HOME_SCREEN, APP_SCREEN, APP_SWITCHER } AppState;
+typedef enum { 
+    LOCK_SCREEN, 
+    PIN_ENTRY, 
+    HOME_SCREEN, 
+    APP_SCREEN, 
+    APP_SWITCHER 
+} AppState;
 
 typedef struct {
     char name[32];
@@ -60,9 +66,18 @@ typedef struct {
     int action_taken;
     int is_dragging_indicator;
     int drag_start_y;
-    int finger_x, finger_y; // Track actual finger position
-    int swipe_detected;      // Flag for quick swipe detection
+    int finger_x, finger_y;
+    int swipe_detected;
 } TouchState;
+
+// Apps configuration
+App apps[] = {
+    {"Phone", COLOR_GREEN, 0}, {"Messages", COLOR_GREEN, 1}, {"Camera", COLOR_GRAY, 2},
+    {"Photos", COLOR_BLUE, 3}, {"Settings", COLOR_LIGHT_GRAY, 4}, {"Calculator", COLOR_ORANGE, 5},
+    {"Clock", COLOR_PURPLE, 6}, {"Weather", COLOR_BLUE, 7}, {"Maps", COLOR_GREEN, 8},
+    {"Music", COLOR_RED, 9}, {"Mail", COLOR_BLUE, 10}, {"Safari", COLOR_BLUE, 11}
+};
+#define APP_COUNT (sizeof(apps)/sizeof(apps[0]))
 
 // Global variables
 uint32_t *framebuffer = NULL, *backbuffer = NULL, *app_buffer = NULL;
@@ -81,26 +96,50 @@ int is_animating = 0;
 stbtt_fontinfo font;
 
 // App switcher state
-int open_apps[APP_COUNT];  // Track which apps are open (1 = open, 0 = closed)
-int num_open_apps = 0;     // Count of currently open apps
+int open_apps[12];  // Track which apps are open (1 = open, 0 = closed)
+int num_open_apps = 0;
 
-// Apps configuration
-App apps[] = {
-    {"Phone", COLOR_GREEN, 0}, {"Messages", COLOR_GREEN, 1}, {"Camera", COLOR_GRAY, 2},
-    {"Photos", COLOR_BLUE, 3}, {"Settings", COLOR_LIGHT_GRAY, 4}, {"Calculator", COLOR_ORANGE, 5},
-    {"Clock", COLOR_PURPLE, 6}, {"Weather", COLOR_BLUE, 7}, {"Maps", COLOR_GREEN, 8},
-    {"Music", COLOR_RED, 9}, {"Mail", COLOR_BLUE, 10}, {"Safari", COLOR_BLUE, 11}
-};
-#define APP_COUNT (sizeof(apps)/sizeof(apps[0]))
+// Function declarations
+uint64_t get_time_ms(void);
+void clear_screen(uint32_t *buf, uint32_t color);
+void draw_rect(uint32_t *buf, int x, int y, int w, int h, uint32_t color);
+void draw_circle_filled(uint32_t *buf, int cx, int cy, int radius, uint32_t color);
+void draw_rounded_rect(uint32_t *buf, int x, int y, int w, int h, int radius, uint32_t color);
+int measure_text_width(const char *text, int font_size);
+void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uint32_t color);
+void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, uint32_t color);
+void get_current_time(char *time_str, char *date_str);
+void draw_status_bar(uint32_t *buf);
+int is_in_bottom_area(int touch_x, int touch_y);
+void add_open_app(int app_id);
+void remove_open_app(int app_id);
+int can_use_home_gesture(AppState state);
+AppState get_home_gesture_target(AppState current);
+float calculate_scale_from_drag(int drag_distance);
+int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t duration);
+void apply_fast_blur(uint32_t *buf, float blur_amount);
+void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x, int finger_y);
+void draw_lock_screen(uint32_t *buf);
+void draw_pin_entry(uint32_t *buf);
+void draw_home_screen(uint32_t *buf);
+void draw_app_screen(uint32_t *buf);
+void draw_app_switcher(uint32_t *buf);
+void update_animations(void);
+void handle_touch_input(void);
+void init_touch_devices(void);
+void read_touch_events(void);
+void cleanup_and_exit(int sig);
 
-uint64_t get_time_ms() {
+uint64_t get_time_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
 }
 
 void clear_screen(uint32_t *buf, uint32_t color) {
-    for (int i = 0; i < screen_w * screen_h; i++) buf[i] = color;
+    for (int i = 0; i < screen_w * screen_h; i++) {
+        buf[i] = color;
+    }
 }
 
 void draw_rect(uint32_t *buf, int x, int y, int w, int h, uint32_t color) {
@@ -112,63 +151,6 @@ void draw_rect(uint32_t *buf, int x, int y, int w, int h, uint32_t color) {
     for (int dy = 0; dy < h; dy++) {
         for (int dx = 0; dx < w; dx++) {
             buf[(y + dy) * screen_w + (x + dx)] = color;
-        }
-    }
-    
-    else if (current_state == APP_SWITCHER) {
-        if (num_open_apps == 0) return;
-        
-        // Calculate card positions
-        int cards_per_row = 2;
-        int card_w = 320;
-        int card_h = 200;
-        int margin_x = 60;
-        int margin_y = 40;
-        
-        int grid_width = cards_per_row * card_w + (cards_per_row - 1) * margin_x;
-        int start_x = (screen_w - grid_width) / 2;
-        int start_y = STATUS_HEIGHT + 100;
-        
-        // Check which card was touched
-        int card_index = 0;
-        for (int i = 0; i < APP_COUNT; i++) {
-            if (!open_apps[i]) continue;
-            
-            int row = card_index / cards_per_row;
-            int col = card_index % cards_per_row;
-            int x = start_x + col * (card_w + margin_x);
-            int y = start_y + row * (card_h + margin_y);
-            
-            if (touch.x >= x && touch.x < (x + card_w) &&
-                touch.y >= y && touch.y < (y + card_h)) {
-                touch.action_taken = 1;
-                
-                // Check if it's a swipe up gesture to close the app
-                if (!touch.last_pressed) {
-                    int swipe_dy = touch.start_y - touch.y;
-                    if (swipe_dy > 100 && (get_time_ms() - touch.touch_start_time) < 500) {
-                        // Close app
-                        remove_open_app(i);
-                        printf("❌ Closed app: %s\n", apps[i].name);
-                        
-                        // If no more apps, go back to home
-                        if (num_open_apps == 0) {
-                            current_state = HOME_SCREEN;
-                            animation_target_state = HOME_SCREEN;
-                        }
-                        return;
-                    } else {
-                        // Open app
-                        current_app = i;
-                        current_state = APP_SCREEN;
-                        animation_target_state = APP_SCREEN;
-                        printf("🚀 Opened app from switcher: %s\n", apps[i].name);
-                        return;
-                    }
-                }
-            }
-            
-            card_index++;
         }
     }
 }
@@ -281,7 +263,7 @@ void draw_status_bar(uint32_t *buf) {
     snprintf(bat_text, sizeof(bat_text), "%d%%", battery_level);
     draw_text(buf, bat_text, SMALL_TEXT, bat_x - 100, bat_y + 5, COLOR_WHITE);
     
-    // Cellular bars - bottom-aligned
+    // Cellular bars
     int bars_bottom = 65;
     for (int i = 0; i < 4; i++) {
         int bar_h = 12 + i * 8;
@@ -290,13 +272,11 @@ void draw_status_bar(uint32_t *buf) {
     }
 }
 
-// Enhanced bottom area detection - includes edge threshold for "below screen" gestures
 int is_in_bottom_area(int touch_x, int touch_y) {
     return (touch_y >= screen_h * (1.0f - BOTTOM_AREA_HEIGHT)) || 
-           (touch_y >= screen_h - EDGE_THRESHOLD); // Allow gestures from very bottom edge
+           (touch_y >= screen_h - EDGE_THRESHOLD);
 }
 
-// App management functions
 void add_open_app(int app_id) {
     if (app_id >= 0 && app_id < APP_COUNT && !open_apps[app_id]) {
         open_apps[app_id] = 1;
@@ -313,6 +293,24 @@ void remove_open_app(int app_id) {
     }
 }
 
+int can_use_home_gesture(AppState state) {
+    return (state != LOCK_SCREEN);
+}
+
+AppState get_home_gesture_target(AppState current) {
+    switch (current) {
+        case PIN_ENTRY:
+        case APP_SCREEN:
+            return HOME_SCREEN;
+        case HOME_SCREEN:
+            return (num_open_apps > 0) ? APP_SWITCHER : HOME_SCREEN;
+        case APP_SWITCHER:
+            return HOME_SCREEN;
+        default:
+            return HOME_SCREEN;
+    }
+}
+
 float calculate_scale_from_drag(int drag_distance) {
     if (drag_distance < 20) return 1.0f;
     float max_drag = screen_h * 0.5f;
@@ -323,46 +321,22 @@ float calculate_scale_from_drag(int drag_distance) {
     return scale;
 }
 
-// Detect if touch is a quick swipe upward
 int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t duration) {
     int dx = end_x - start_x;
-    int dy = start_y - end_y; // Upward is positive
+    int dy = start_y - end_y;
     int distance = sqrt(dx*dx + dy*dy);
     
     return (dy > SWIPE_THRESHOLD && 
             duration <= SWIPE_TIME_LIMIT && 
             distance > SWIPE_THRESHOLD &&
-            dy > abs(dx)); // More vertical than horizontal
+            dy > abs(dx));
 }
 
-// Check if we should allow home gesture in current state
-int can_use_home_gesture(AppState state) {
-    // Don't allow home gesture from lock screen - it should go to PIN entry first
-    return (state != LOCK_SCREEN);
-}
-
-// Determine where home gesture should go based on current state
-AppState get_home_gesture_target(AppState current) {
-    switch (current) {
-        case PIN_ENTRY:
-        case APP_SCREEN:
-            return HOME_SCREEN;
-        case HOME_SCREEN:
-            return (num_open_apps > 0) ? APP_SWITCHER : HOME_SCREEN; // Go to switcher if apps are open
-        case APP_SWITCHER:
-            return HOME_SCREEN;
-        default:
-            return HOME_SCREEN;
-    }
-}
-
-// SUPER FAST blur - just darken pixels slightly for depth effect
 void apply_fast_blur(uint32_t *buf, float blur_amount) {
     if (blur_amount < 0.1f) return;
     
-    int darken = (int)(blur_amount * 40); // How much to darken (0-40)
+    int darken = (int)(blur_amount * 40);
     
-    // Just darken every pixel - much faster than actual blur
     for (int i = 0; i < screen_w * screen_h; i++) {
         uint32_t pixel = buf[i];
         int r = ((pixel >> 16) & 0xFF);
@@ -377,16 +351,13 @@ void apply_fast_blur(uint32_t *buf, float blur_amount) {
     }
 }
 
-// OPTIMIZED scaled window drawing - window follows finger EXACTLY
 void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x, int finger_y) {
     int scaled_w = (int)(screen_w * scale);
     int scaled_h = (int)(screen_h * scale);
     
-    // Window center follows finger position EXACTLY
     int center_x = finger_x;
     int center_y = finger_y;
     
-    // Keep window on screen
     if (center_x - scaled_w/2 < 0) center_x = scaled_w/2;
     if (center_x + scaled_w/2 > screen_w) center_x = screen_w - scaled_w/2;
     if (center_y - scaled_h/2 < 0) center_y = scaled_h/2;
@@ -395,7 +366,6 @@ void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x
     int start_x = center_x - scaled_w/2;
     int start_y = center_y - scaled_h/2;
     
-    // Fast scaling with proper bounds checking
     for (int y = 0; y < scaled_h; y++) {
         int dest_y = start_y + y;
         if (dest_y < 0 || dest_y >= screen_h) continue;
@@ -423,11 +393,9 @@ void draw_lock_screen(uint32_t *buf) {
     get_current_time(time_str, date_str);
     
     draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 250, COLOR_WHITE);
-    // Moved date text further down to prevent overlap
     draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 80, COLOR_LIGHT_GRAY);
     draw_text_centered(buf, "Swipe up to unlock", SMALL_TEXT, screen_h - 200, COLOR_GRAY);
     
-    // Home indicator - lighter on lock screen since gesture is limited
     draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_GRAY);
 }
 
@@ -471,7 +439,6 @@ void draw_pin_entry(uint32_t *buf) {
         draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
     }
     
-    // Home indicator - active in PIN entry (home gesture works here)
     draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
 }
 
@@ -497,7 +464,45 @@ void draw_home_screen(uint32_t *buf) {
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
     }
     
-    // Only show home indicator when NOT scaling
+    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
+        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    }
+}
+
+void draw_app_screen(uint32_t *buf) {
+    clear_screen(buf, COLOR_BG);
+    draw_status_bar(buf);
+    
+    if (current_app >= 0 && current_app < APP_COUNT) {
+        App *app = &apps[current_app];
+        
+        draw_text_centered(buf, app->name, LARGE_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
+        
+        if (current_app == 5) { // Calculator
+            draw_text_centered(buf, "0", LARGE_TEXT * 2, STATUS_HEIGHT + 200, COLOR_WHITE);
+            
+            char calc_btns[] = "789+456-123*C0=";
+            int calc_start_x = screen_w/2 - 320;
+            int calc_start_y = STATUS_HEIGHT + 350;
+            
+            for (int i = 0; i < 16; i++) {
+                int row = i / 4;
+                int col = i % 4;
+                int x = calc_start_x + col * 160;
+                int y = calc_start_y + row * 120;
+                
+                uint32_t btn_color = (col == 3) ? COLOR_ORANGE : COLOR_GRAY;
+                draw_rounded_rect(buf, x, y, 140, 100, 20, btn_color);
+                
+                char btn_text[2] = {calc_btns[i], 0};
+                int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
+                draw_text(buf, btn_text, MEDIUM_TEXT, x + 70 - text_w/2, y + 30, COLOR_WHITE);
+            }
+        } else {
+            draw_text_centered(buf, "App Content", MEDIUM_TEXT, STATUS_HEIGHT + 200, COLOR_GRAY);
+        }
+    }
+    
     if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
         draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
     }
@@ -513,7 +518,6 @@ void draw_app_switcher(uint32_t *buf) {
         return;
     }
     
-    // App switcher title
     draw_text_centered(buf, "Open Apps", MEDIUM_TEXT, STATUS_HEIGHT + 20, COLOR_WHITE);
     
     // Calculate grid layout
@@ -550,61 +554,14 @@ void draw_app_switcher(uint32_t *buf) {
         int text_w = measure_text_width(apps[i].name, SMALL_TEXT);
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (card_w - text_w)/2, y + card_h - 40, COLOR_WHITE);
         
-        // Close indicator at top
-        draw_text_centered(buf, "Swipe up to close", 24, y - 25, COLOR_LIGHT_GRAY);
-        
         card_index++;
     }
     
-    // Instructions
     draw_text_centered(buf, "Tap to open • Swipe up on card to close", SMALL_TEXT, screen_h - 150, COLOR_LIGHT_GRAY);
-    
-    // Home indicator
     draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
 }
 
-void draw_app_screen(uint32_t *buf) {
-}
-    clear_screen(buf, COLOR_BG);
-    draw_status_bar(buf);
-    
-    if (current_app >= 0 && current_app < APP_COUNT) {
-        App *app = &apps[current_app];
-        
-        draw_text_centered(buf, app->name, LARGE_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
-        
-        if (current_app == 5) { // Calculator
-            draw_text_centered(buf, "0", LARGE_TEXT * 2, STATUS_HEIGHT + 200, COLOR_WHITE);
-            
-            char calc_btns[] = "789+456-123*C0=";
-            int calc_start_x = screen_w/2 - 320;
-            int calc_start_y = STATUS_HEIGHT + 350;
-            
-            for (int i = 0; i < 16; i++) {
-                int row = i / 4;
-                int col = i % 4;
-                int x = calc_start_x + col * 160;
-                int y = calc_start_y + row * 120;
-                
-                uint32_t btn_color = (col == 3) ? COLOR_ORANGE : COLOR_GRAY;
-                draw_rounded_rect(buf, x, y, 140, 100, 20, btn_color);
-                
-                char btn_text[2] = {calc_btns[i], 0};
-                int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
-                draw_text(buf, btn_text, MEDIUM_TEXT, x + 70 - text_w/2, y + 30, COLOR_WHITE);
-            }
-        } else {
-            draw_text_centered(buf, "App Content", MEDIUM_TEXT, STATUS_HEIGHT + 200, COLOR_GRAY);
-        }
-    }
-    
-    // Only show home indicator when NOT scaling
-    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
-    }
-}
-
-void update_animations() {
+void update_animations(void) {
     if (is_animating) {
         float diff = target_scale - current_scale;
         if (fabs(diff) < 0.01f || (target_scale == 0.0f && current_scale < 0.05f)) {
@@ -629,15 +586,13 @@ void update_animations() {
     }
 }
 
-void handle_touch_input() {
+void handle_touch_input(void) {
     if (touch.pressed && !touch.last_pressed) {
-        // Start of touch
         touch.touch_start_time = get_time_ms();
         touch.start_x = touch.x;
         touch.start_y = touch.y;
         touch.swipe_detected = 0;
         
-        // Check for home gesture start in states that support it
         if (is_in_bottom_area(touch.x, touch.y) && can_use_home_gesture(current_state)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
@@ -649,7 +604,6 @@ void handle_touch_input() {
         }
     }
     
-    // Handle indicator drag - WINDOW FOLLOWS FINGER EXACTLY
     if (touch.pressed && touch.is_dragging_indicator) {
         int drag_distance = touch.drag_start_y - touch.y;
         if (drag_distance >= 0) {
@@ -660,11 +614,10 @@ void handle_touch_input() {
         return;
     }
     
-    // Handle touch release
     if (!touch.pressed && touch.last_pressed) {
         uint64_t touch_duration = get_time_ms() - touch.touch_start_time;
         
-        // Handle lock screen swipe FIRST (highest priority)
+        // Handle lock screen swipe first
         if (current_state == LOCK_SCREEN) {
             int swipe_dy = touch.start_y - touch.y;
             if (swipe_dy > 80 && is_in_bottom_area(touch.start_x, touch.start_y)) {
@@ -675,12 +628,10 @@ void handle_touch_input() {
             }
         }
         
-        // Handle indicator release or quick swipe (for states that support home gesture)
         if (touch.is_dragging_indicator) {
             int final_drag = touch.drag_start_y - touch.y;
-            float threshold = screen_h * 0.15f; // Lower threshold for easier activation
+            float threshold = screen_h * 0.15f;
             
-            // Check for quick swipe OR sufficient drag
             int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
                                               touch.x, touch.y, touch_duration);
             
@@ -704,7 +655,6 @@ void handle_touch_input() {
             return;
         }
         
-        // Check for quick swipe from bottom in states that support home gesture (fallback)
         if (is_in_bottom_area(touch.start_x, touch.start_y) && 
             can_use_home_gesture(current_state)) {
             int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
@@ -717,16 +667,14 @@ void handle_touch_input() {
                 animation_target_state = target;
                 target_scale = 0.0f;
                 is_animating = 1;
-                current_scale = 0.8f; // Start animation from scaled state
+                current_scale = 0.8f;
                 return;
             }
         }
         
-        // Reset action flag for button handling
         touch.action_taken = 0;
     }
     
-    // Regular button handling (only when not dragging indicator)
     if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
     
     if (current_state == PIN_ENTRY) {
@@ -765,9 +713,7 @@ void handle_touch_input() {
                 return;
             }
         }
-    }
-    
-    else if (current_state == HOME_SCREEN) {
+    } else if (current_state == HOME_SCREEN) {
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
@@ -783,17 +729,64 @@ void handle_touch_input() {
                 touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
                 touch.action_taken = 1;
                 current_app = i;
-                add_open_app(i); // Track that this app is now open
+                add_open_app(i);
                 current_state = APP_SCREEN;
                 animation_target_state = APP_SCREEN;
                 printf("🚀 Launched: %s\n", apps[i].name);
                 return;
             }
         }
+    } else if (current_state == APP_SWITCHER) {
+        if (num_open_apps == 0) return;
+        
+        int cards_per_row = 2;
+        int card_w = 320;
+        int card_h = 200;
+        int margin_x = 60;
+        int margin_y = 40;
+        
+        int grid_width = cards_per_row * card_w + (cards_per_row - 1) * margin_x;
+        int start_x = (screen_w - grid_width) / 2;
+        int start_y = STATUS_HEIGHT + 100;
+        
+        int card_index = 0;
+        for (int i = 0; i < APP_COUNT; i++) {
+            if (!open_apps[i]) continue;
+            
+            int row = card_index / cards_per_row;
+            int col = card_index % cards_per_row;
+            int x = start_x + col * (card_w + margin_x);
+            int y = start_y + row * (card_h + margin_y);
+            
+            if (touch.x >= x && touch.x < (x + card_w) &&
+                touch.y >= y && touch.y < (y + card_h)) {
+                touch.action_taken = 1;
+                
+                int swipe_dy = touch.start_y - touch.y;
+                if (swipe_dy > 100 && (get_time_ms() - touch.touch_start_time) < 500) {
+                    remove_open_app(i);
+                    printf("❌ Closed app: %s\n", apps[i].name);
+                    
+                    if (num_open_apps == 0) {
+                        current_state = HOME_SCREEN;
+                        animation_target_state = HOME_SCREEN;
+                    }
+                    return;
+                } else {
+                    current_app = i;
+                    current_state = APP_SCREEN;
+                    animation_target_state = APP_SCREEN;
+                    printf("🚀 Opened app from switcher: %s\n", apps[i].name);
+                    return;
+                }
+            }
+            
+            card_index++;
+        }
     }
 }
 
-void init_touch_devices() {
+void init_touch_devices(void) {
     for (int i = 0; i < 16; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
@@ -813,7 +806,7 @@ void init_touch_devices() {
     }
 }
 
-void read_touch_events() {
+void read_touch_events(void) {
     struct pollfd fds[16];
     for (int i = 0; i < num_touch_devices; i++) {
         fds[i] = (struct pollfd){touch_devices[i].fd, POLLIN, 0};
@@ -867,8 +860,11 @@ void cleanup_and_exit(int sig) {
     exit(0);
 }
 
-int main() {
+int main(void) {
     signal(SIGINT, cleanup_and_exit);
+    
+    // Initialize open apps array
+    memset(open_apps, 0, sizeof(open_apps));
     
     // Load font
     FILE *font_file = fopen(FONT_PATH, "rb");
@@ -923,9 +919,7 @@ int main() {
         handle_touch_input();
         update_animations();
         
-        // OPTIMIZED RENDERING PIPELINE
         if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-            // Normal mode - direct render
             switch (current_state) {
                 case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
                 case PIN_ENTRY: draw_pin_entry(backbuffer); break;
@@ -934,18 +928,13 @@ int main() {
                 case APP_SWITCHER: draw_app_switcher(backbuffer); break;
             }
         } else {
-            // Scaling mode - OPTIMIZED
-            
-            // 1. Draw home screen as background
             draw_home_screen(backbuffer);
             
-            // 2. FAST blur effect (just darken)
             float blur_amount = (1.0f - current_scale) * 0.5f;
             if (blur_amount > 0.1f) {
                 apply_fast_blur(backbuffer, blur_amount);
             }
             
-            // 3. Draw current screen to app buffer
             switch (current_state) {
                 case LOCK_SCREEN: draw_lock_screen(app_buffer); break;
                 case PIN_ENTRY: draw_pin_entry(app_buffer); break;
@@ -954,21 +943,17 @@ int main() {
                 case APP_SWITCHER: draw_app_switcher(app_buffer); break;
             }
             
-            // 4. Draw scaled window - FOLLOWS FINGER EXACTLY
             if (touch.is_dragging_indicator) {
                 draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
             } else {
-                // Center when animating
                 draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
             }
             
-            // 5. Draw floating home indicator bar AT FINGER
             if (touch.is_dragging_indicator) {
                 int bar_w = 240;
                 int bar_x = touch.finger_x - bar_w/2;
                 int bar_y = screen_h - 80;
                 
-                // Keep bar on screen
                 if (bar_x < 20) bar_x = 20;
                 if (bar_x + bar_w > screen_w - 20) bar_x = screen_w - 20 - bar_w;
                 
@@ -976,12 +961,10 @@ int main() {
             }
         }
         
-        // Debug dot
         if (touch.pressed) {
             draw_circle_filled(backbuffer, touch.x, touch.y, 8, COLOR_RED);
         }
         
-        // Single copy to framebuffer
         memcpy(framebuffer, backbuffer, screen_w * screen_h * 4);
         
         usleep(16666); // 60 FPS
