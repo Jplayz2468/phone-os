@@ -37,8 +37,8 @@
 // Enhanced touch constants
 #define SWIPE_THRESHOLD 100
 #define SWIPE_TIME_LIMIT 300
-#define BOTTOM_AREA_HEIGHT 0.45f  // Bottom 45% of screen for home gesture (was 30%)
-#define EDGE_THRESHOLD 100        // 100 pixels from bottom edge (was 50)
+#define BOTTOM_AREA_HEIGHT 0.30f
+#define EDGE_THRESHOLD 50
 
 typedef enum { 
     LOCK_SCREEN, 
@@ -111,6 +111,7 @@ void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, u
 void get_current_time(char *time_str, char *date_str);
 void draw_status_bar(uint32_t *buf);
 int is_in_bottom_area(int touch_x, int touch_y);
+int is_touching_home_indicator(int touch_x, int touch_y);
 void add_open_app(int app_id);
 void remove_open_app(int app_id);
 int can_use_home_gesture(AppState state);
@@ -275,6 +276,30 @@ void draw_status_bar(uint32_t *buf) {
 int is_in_bottom_area(int touch_x, int touch_y) {
     return (touch_y >= screen_h * (1.0f - BOTTOM_AREA_HEIGHT)) || 
            (touch_y >= screen_h - EDGE_THRESHOLD);
+}
+
+// NEW: Precise home indicator bar detection - extends to bottom edge
+int is_touching_home_indicator(int touch_x, int touch_y) {
+    int bar_center_x = screen_w / 2;
+    int bar_y_start = screen_h - 80;  // Where the bar starts
+    int bar_width = 200;
+    int bar_extended_width = 300;  // Slightly wider hitbox
+    
+    // Check if touch is within the horizontal bounds of the home indicator (with some extra width)
+    int x_in_range = (touch_x >= (bar_center_x - bar_extended_width/2)) && 
+                     (touch_x <= (bar_center_x + bar_extended_width/2));
+    
+    // Check if touch is from the bar position down to the very bottom edge
+    int y_in_range = (touch_y >= bar_y_start);
+    
+    int result = x_in_range && y_in_range;
+    if (result) {
+        printf("🎯 Home indicator hit: x=%d (range %d-%d), y=%d (>=%d)\n", 
+               touch_x, bar_center_x - bar_extended_width/2, bar_center_x + bar_extended_width/2,
+               touch_y, bar_y_start);
+    }
+    
+    return result;
 }
 
 void add_open_app(int app_id) {
@@ -599,12 +624,13 @@ void handle_touch_input(void) {
             return; // Just track the touch, don't start any gestures
         }
         
-        if (is_in_bottom_area(touch.x, touch.y) && can_use_home_gesture(current_state)) {
+        // Use precise home indicator detection for home gesture (not the broad bottom area)
+        if (is_touching_home_indicator(touch.x, touch.y) && can_use_home_gesture(current_state)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
             touch.finger_x = touch.x;
             touch.finger_y = touch.y;
-            printf("🎯 Started home gesture - finger at (%d, %d) in state %d\n", 
+            printf("🎯 Started home gesture on indicator - finger at (%d, %d) in state %d\n", 
                    touch.x, touch.y, current_state);
             return;
         }
@@ -671,13 +697,13 @@ void handle_touch_input(void) {
         
         // PRIORITY 3: Fallback quick swipe detection (for non-lock-screen states)
         if (current_state != LOCK_SCREEN && 
-            is_in_bottom_area(touch.start_x, touch.start_y) && 
+            is_touching_home_indicator(touch.start_x, touch.start_y) && 
             can_use_home_gesture(current_state)) {
             int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
                                               touch.x, touch.y, touch_duration);
             if (quick_swipe) {
                 AppState target = get_home_gesture_target(current_state);
-                printf("🚀 Quick swipe to %s from state %d\n", 
+                printf("🚀 Quick swipe to %s from indicator in state %d\n", 
                        target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown",
                        current_state);
                 animation_target_state = target;
@@ -926,12 +952,12 @@ int main(void) {
     
     animation_target_state = current_state;
     
-    printf("📱 ENHANCED iOS Phone OS - App Switcher & Edge Gestures! 🚀\n");
-    printf("🔓 Lock screen: swipe up → PIN entry\n");
-    printf("🎯 PIN/Apps: bottom 45%% + edge = LARGE home gesture area\n");
-    printf("🏠 Home screen: swipe up → app switcher (if apps open)\n");
+    printf("📱 ENHANCED iOS Phone OS - Precise Home Indicator! 🚀\n");
+    printf("🔓 Lock screen: swipe up from bottom → PIN entry\n");
+    printf("🎯 Home indicator: precise bar hitbox extends to edge\n");
+    printf("🏠 Home screen: swipe up indicator → app switcher (if apps open)\n");
     printf("📱 App switcher: tap to open, swipe up to close\n");
-    printf("⚡ Gestures work from screen edge and below\n");
+    printf("⚡ Much easier to grab the home indicator now!\n");
     
     while (1) {
         read_touch_events();
