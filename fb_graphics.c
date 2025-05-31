@@ -257,7 +257,8 @@ int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t d
 
 // Check if we should allow home gesture in current state
 int can_use_home_gesture(AppState state) {
-    return 1; // Allow in ALL states now
+    // Don't allow home gesture from lock screen - it should go to PIN entry first
+    return (state != LOCK_SCREEN);
 }
 
 // SUPER FAST blur - just darken pixels slightly for depth effect
@@ -331,8 +332,8 @@ void draw_lock_screen(uint32_t *buf) {
     draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 80, COLOR_LIGHT_GRAY);
     draw_text_centered(buf, "Swipe up to unlock", SMALL_TEXT, screen_h - 200, COLOR_GRAY);
     
-    // Home indicator - visible in all states
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_LIGHT_GRAY);
+    // Home indicator - lighter on lock screen since gesture is limited
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_GRAY);
 }
 
 void draw_pin_entry(uint32_t *buf) {
@@ -375,8 +376,8 @@ void draw_pin_entry(uint32_t *buf) {
         draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
     }
     
-    // Home indicator - now visible in PIN entry too
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_LIGHT_GRAY);
+    // Home indicator - active in PIN entry (home gesture works here)
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
 }
 
 void draw_home_screen(uint32_t *buf) {
@@ -479,7 +480,7 @@ void handle_touch_input() {
         touch.start_y = touch.y;
         touch.swipe_detected = 0;
         
-        // Check for home gesture start in any state that supports it
+        // Check for home gesture start in states that support it
         if (is_in_bottom_area(touch.x, touch.y) && can_use_home_gesture(current_state)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
@@ -506,7 +507,18 @@ void handle_touch_input() {
     if (!touch.pressed && touch.last_pressed) {
         uint64_t touch_duration = get_time_ms() - touch.touch_start_time;
         
-        // Handle indicator release or quick swipe
+        // Handle lock screen swipe FIRST (highest priority)
+        if (current_state == LOCK_SCREEN) {
+            int swipe_dy = touch.start_y - touch.y;
+            if (swipe_dy > 80 && is_in_bottom_area(touch.start_x, touch.start_y)) {
+                printf("🔓 Lock screen swipe → PIN entry\n");
+                current_state = PIN_ENTRY;
+                animation_target_state = PIN_ENTRY;
+                return;
+            }
+        }
+        
+        // Handle indicator release or quick swipe (for states that support home gesture)
         if (touch.is_dragging_indicator) {
             int final_drag = touch.drag_start_y - touch.y;
             float threshold = screen_h * 0.15f; // Lower threshold for easier activation
@@ -533,7 +545,7 @@ void handle_touch_input() {
             return;
         }
         
-        // Check for quick swipe from bottom in any state (fallback)
+        // Check for quick swipe from bottom in states that support home gesture (fallback)
         if (is_in_bottom_area(touch.start_x, touch.start_y) && 
             can_use_home_gesture(current_state)) {
             int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
@@ -544,17 +556,6 @@ void handle_touch_input() {
                 target_scale = 0.0f;
                 is_animating = 1;
                 current_scale = 0.8f; // Start animation from scaled state
-                return;
-            }
-        }
-        
-        // Regular swipe from lock screen (legacy)
-        if (current_state == LOCK_SCREEN) {
-            int swipe_dy = touch.start_y - touch.y;
-            if (swipe_dy > 80 && is_in_bottom_area(touch.start_x, touch.start_y)) {
-                printf("🔓 Lock screen swipe → PIN entry\n");
-                current_state = PIN_ENTRY;
-                animation_target_state = PIN_ENTRY;
                 return;
             }
         }
@@ -747,10 +748,10 @@ int main() {
     
     animation_target_state = current_state;
     
-    printf("📱 ENHANCED iOS Phone OS - Universal Home Gesture! 🚀\n");
-    printf("🎯 Bottom 25%% of screen = home gesture area\n");
+    printf("📱 ENHANCED iOS Phone OS - Smart Home Gesture! 🚀\n");
+    printf("🔓 Lock screen: swipe up → PIN entry\n");
+    printf("🎯 PIN/Home/Apps: bottom 25%% = home gesture area\n");
     printf("⚡ Quick swipes AND hold+drag both work\n");
-    printf("🔥 Works in ALL states (lock, PIN, home, apps)\n");
     printf("📅 Fixed date positioning on lock screen\n");
     
     while (1) {
