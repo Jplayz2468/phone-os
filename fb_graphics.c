@@ -458,8 +458,6 @@ void draw_pin_entry(uint32_t *buf) {
         int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
         draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
     }
-    
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
 }
 
 void draw_home_screen(uint32_t *buf) {
@@ -482,10 +480,6 @@ void draw_home_screen(uint32_t *buf) {
         
         int text_w = measure_text_width(apps[i].name, SMALL_TEXT);
         draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
-    }
-    
-    if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
     }
 }
 
