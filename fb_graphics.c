@@ -73,6 +73,7 @@ typedef struct {
     float capsule_top;    // Top of the capsule track
     float capsule_bottom; // Bottom of the capsule track
     int sphere_radius;    // Radius of the sphere
+    int capsule_width;    // Width of the capsule
 } PhysicsSphere;
 
 // Apps configuration
@@ -124,6 +125,7 @@ void handle_touch_input(void);
 void init_touch_devices(void);
 void read_touch_events(void);
 void cleanup_and_exit(int sig);
+float ease_in_out_cubic(float t);
 
 uint64_t get_time_ms(void) {
     struct timespec ts;
@@ -268,11 +270,12 @@ void draw_status_bar(uint32_t *buf) {
 }
 
 void init_physics_sphere(void) {
-    // Initialize sphere at bottom of screen
+    // Initialize much bigger sphere and capsule
     sphere.x = screen_w / 2.0f;
-    sphere.capsule_bottom = screen_h - 40;
-    sphere.capsule_top = screen_h - 300;
-    sphere.sphere_radius = 25;
+    sphere.capsule_bottom = screen_h - 80;
+    sphere.capsule_top = screen_h - 600;  // Much bigger capsule area
+    sphere.sphere_radius = 60;            // Much bigger sphere
+    sphere.capsule_width = 160;           // Much wider capsule
     sphere.y = sphere.capsule_bottom - sphere.sphere_radius;
     sphere.target_y = sphere.y;
     sphere.velocity_y = 0.0f;
@@ -307,28 +310,47 @@ void update_physics_sphere(void) {
 }
 
 void draw_physics_sphere(uint32_t *buf) {
-    if (current_state != LOCK_SCREEN) return;
+    if (current_state != LOCK_SCREEN && !is_transitioning) return;
     
-    // Draw capsule track
-    int capsule_x = sphere.x - 15;
-    int capsule_w = 30;
+    // Draw much bigger capsule track
+    int capsule_x = sphere.x - sphere.capsule_width / 2;
     int capsule_h = sphere.capsule_bottom - sphere.capsule_top;
+    int radius = sphere.capsule_width / 2;
     
-    draw_rounded_rect(buf, capsule_x, sphere.capsule_top, capsule_w, capsule_h, 15, COLOR_GRAY);
-    draw_rounded_rect(buf, capsule_x + 3, sphere.capsule_top + 3, capsule_w - 6, capsule_h - 6, 12, COLOR_BG);
+    // Outer capsule
+    draw_rounded_rect(buf, capsule_x, sphere.capsule_top, sphere.capsule_width, capsule_h, radius, COLOR_GRAY);
     
-    // Draw sphere with glow effect
-    uint32_t sphere_color = COLOR_WHITE;
+    // Inner capsule (hollow)
+    int inner_margin = 12;
+    draw_rounded_rect(buf, capsule_x + inner_margin, sphere.capsule_top + inner_margin, 
+                     sphere.capsule_width - 2*inner_margin, capsule_h - 2*inner_margin, 
+                     radius - inner_margin, COLOR_BG);
     
-    // Outer glow
-    draw_circle_filled(buf, sphere.x, sphere.y, sphere.sphere_radius + 8, 0x33FFFFFF);
-    draw_circle_filled(buf, sphere.x, sphere.y, sphere.sphere_radius + 4, 0x66FFFFFF);
+    // Draw much bigger sphere with glow effect
+    uint32_t sphere_color = sphere.is_dragging ? COLOR_BLUE : COLOR_WHITE;
+    
+    // Outer glow layers
+    draw_circle_filled(buf, sphere.x, sphere.y, sphere.sphere_radius + 20, 0x22FFFFFF);
+    draw_circle_filled(buf, sphere.x, sphere.y, sphere.sphere_radius + 12, 0x44FFFFFF);
+    draw_circle_filled(buf, sphere.x, sphere.y, sphere.sphere_radius + 6, 0x66FFFFFF);
     
     // Main sphere
     draw_circle_filled(buf, sphere.x, sphere.y, sphere.sphere_radius, sphere_color);
     
     // Inner highlight
-    draw_circle_filled(buf, sphere.x - 6, sphere.y - 6, 8, 0xAAFFFFFF);
+    draw_circle_filled(buf, sphere.x - 15, sphere.y - 15, 20, 0xAAFFFFFF);
+    
+    // Progress indicator dots along the track
+    int num_dots = 8;
+    for (int i = 0; i < num_dots; i++) {
+        float progress = (float)i / (num_dots - 1);
+        int dot_y = sphere.capsule_top + sphere.sphere_radius + progress * (capsule_h - 2 * sphere.sphere_radius);
+        
+        // Highlight dots that are below current sphere position
+        uint32_t dot_color = (dot_y > sphere.y) ? COLOR_GREEN : COLOR_LIGHT_GRAY;
+        draw_circle_filled(buf, sphere.x - sphere.capsule_width/2 + 20, dot_y, 6, dot_color);
+        draw_circle_filled(buf, sphere.x + sphere.capsule_width/2 - 20, dot_y, 6, dot_color);
+    }
 }
 
 int is_touching_sphere(int touch_x, int touch_y) {
@@ -337,21 +359,44 @@ int is_touching_sphere(int touch_x, int touch_y) {
     int dx = touch_x - sphere.x;
     int dy = touch_y - sphere.y;
     int distance_sq = dx*dx + dy*dy;
-    int touch_radius = sphere.sphere_radius + 20; // Larger touch area
+    int touch_radius = sphere.sphere_radius + 40; // Much larger touch area
     
     return distance_sq <= (touch_radius * touch_radius);
 }
 
+float ease_in_out_cubic(float t) {
+    return t < 0.5f ? 4 * t * t * t : 1 - powf(-2 * t + 2, 3) / 2;
+}
+
 void draw_lock_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
+    
+    // Apply transition effects
+    float alpha = 1.0f;
+    if (is_transitioning && animation_target_state == PIN_ENTRY) {
+        alpha = 1.0f - transition_progress;
+    }
+    
     draw_status_bar(buf);
     
     char time_str[32], date_str[64];
     get_current_time(time_str, date_str);
     
-    draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 250, COLOR_WHITE);
-    draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 80, COLOR_LIGHT_GRAY);
-    draw_text_centered(buf, "Drag sphere up to unlock", SMALL_TEXT, screen_h - 350, COLOR_GRAY);
+    // Apply fade effect during transition
+    uint32_t time_color = COLOR_WHITE;
+    uint32_t date_color = COLOR_LIGHT_GRAY;
+    uint32_t text_color = COLOR_GRAY;
+    
+    if (alpha < 1.0f) {
+        int a = (int)(alpha * 255);
+        time_color = (a << 24) | (time_color & 0x00FFFFFF);
+        date_color = (a << 24) | (date_color & 0x00FFFFFF);
+        text_color = (a << 24) | (text_color & 0x00FFFFFF);
+    }
+    
+    draw_text_centered(buf, time_str, LARGE_TEXT * 2, screen_h/2 - 350, time_color);
+    draw_text_centered(buf, date_str, MEDIUM_TEXT, screen_h/2 - 200, date_color);
+    draw_text_centered(buf, "Drag sphere up to unlock", SMALL_TEXT, screen_h - 650, text_color);
     
     // Draw physics sphere
     draw_physics_sphere(buf);
@@ -359,27 +404,60 @@ void draw_lock_screen(uint32_t *buf) {
 
 void draw_pin_entry(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
+    
+    // Apply transition effects
+    float alpha = 1.0f;
+    int offset_x = 0;
+    
+    if (is_transitioning) {
+        float eased_progress = ease_in_out_cubic(transition_progress);
+        
+        if (animation_target_state == PIN_ENTRY) {
+            // Sliding in from right
+            offset_x = (int)((1.0f - eased_progress) * screen_w);
+            alpha = eased_progress;
+        } else if (animation_target_state == HOME_SCREEN) {
+            // Sliding out to left
+            offset_x = -(int)(eased_progress * screen_w);
+            alpha = 1.0f - eased_progress;
+        }
+    }
+    
     draw_status_bar(buf);
     
-    draw_text_centered(buf, "Enter Passcode", MEDIUM_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
+    // Apply transition effects to colors
+    uint32_t text_color = COLOR_WHITE;
+    uint32_t dot_filled_color = COLOR_WHITE;
+    uint32_t dot_empty_color = COLOR_GRAY;
+    uint32_t button_color = COLOR_GRAY;
+    
+    if (alpha < 1.0f) {
+        int a = (int)(alpha * 255);
+        text_color = (a << 24) | (text_color & 0x00FFFFFF);
+        dot_filled_color = (a << 24) | (dot_filled_color & 0x00FFFFFF);
+        dot_empty_color = (a << 24) | (dot_empty_color & 0x00FFFFFF);
+        button_color = (a << 24) | (button_color & 0x00FFFFFF);
+    }
+    
+    draw_text_centered(buf, "Enter Passcode", MEDIUM_TEXT, STATUS_HEIGHT + 50 + offset_x, text_color);
     
     // PIN dots
     int dot_spacing = 80;
-    int start_x = screen_w/2 - 120;
+    int start_x = screen_w/2 - 120 + offset_x;
     for (int i = 0; i < 4; i++) {
         int x = start_x + i * dot_spacing;
         int y = STATUS_HEIGHT + 150;
         if (i < (int)strlen(pin_input)) {
-            draw_circle_filled(buf, x, y, 20, COLOR_WHITE);
+            draw_circle_filled(buf, x, y, 20, dot_filled_color);
         } else {
-            draw_circle_filled(buf, x, y, 20, COLOR_GRAY);
+            draw_circle_filled(buf, x, y, 20, dot_empty_color);
             draw_circle_filled(buf, x, y, 16, COLOR_BG);
         }
     }
     
     // PIN pad
     char pin_labels[] = "123456789*0#";
-    int pad_start_x = screen_w/2 - 240;
+    int pad_start_x = screen_w/2 - 240 + offset_x;
     int pad_start_y = STATUS_HEIGHT + 250;
     
     for (int i = 0; i < 12; i++) {
@@ -390,23 +468,52 @@ void draw_pin_entry(uint32_t *buf) {
         int x = pad_start_x + col * 160;
         int y = pad_start_y + row * 160;
         
-        draw_circle_filled(buf, x + 80, y + 80, 70, COLOR_GRAY);
+        draw_circle_filled(buf, x + 80, y + 80, 70, button_color);
         
         char btn_text[2] = {pin_labels[i], 0};
         int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
-        draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, COLOR_WHITE);
+        draw_text(buf, btn_text, MEDIUM_TEXT, x + 80 - text_w/2, y + 60, text_color);
     }
 }
 
 void draw_home_screen(uint32_t *buf) {
     clear_screen(buf, COLOR_BG);
+    
+    // Apply transition effects
+    float alpha = 1.0f;
+    int offset_x = 0;
+    float scale = 1.0f;
+    
+    if (is_transitioning) {
+        float eased_progress = ease_in_out_cubic(transition_progress);
+        
+        if (animation_target_state == HOME_SCREEN) {
+            // Scaling in from center
+            scale = 0.3f + eased_progress * 0.7f;
+            alpha = eased_progress;
+        }
+    }
+    
     draw_status_bar(buf);
     
-    // App grid
+    // Apply transition effects to colors
+    uint32_t text_color = COLOR_WHITE;
+    uint32_t indicator_color = COLOR_WHITE;
+    
+    if (alpha < 1.0f) {
+        int a = (int)(alpha * 255);
+        text_color = (a << 24) | (text_color & 0x00FFFFFF);
+        indicator_color = (a << 24) | (indicator_color & 0x00FFFFFF);
+    }
+    
+    // App grid with scaling
     int apps_per_row = 3;
     int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
     int start_x = (screen_w - grid_width) / 2;
     int start_y = STATUS_HEIGHT + 80;
+    
+    int center_x = screen_w / 2;
+    int center_y = screen_h / 2;
     
     for (int i = 0; i < APP_COUNT && i < 12; i++) {
         int row = i / apps_per_row;
@@ -414,14 +521,24 @@ void draw_home_screen(uint32_t *buf) {
         int x = start_x + col * (ICON_SIZE + MARGIN);
         int y = start_y + row * (ICON_SIZE + MARGIN * 2);
         
-        draw_rounded_rect(buf, x, y, ICON_SIZE, ICON_SIZE, 40, apps[i].color);
+        // Apply scaling transform
+        int scaled_x = center_x + (x - center_x) * scale;
+        int scaled_y = center_y + (y - center_y) * scale;
+        int scaled_size = ICON_SIZE * scale;
         
-        int text_w = measure_text_width(apps[i].name, SMALL_TEXT);
-        draw_text(buf, apps[i].name, SMALL_TEXT, x + (ICON_SIZE - text_w)/2, y + ICON_SIZE + 20, COLOR_WHITE);
+        draw_rounded_rect(buf, scaled_x, scaled_y, scaled_size, scaled_size, 40 * scale, apps[i].color);
+        
+        int text_w = measure_text_width(apps[i].name, SMALL_TEXT * scale);
+        draw_text(buf, apps[i].name, SMALL_TEXT * scale, 
+                 scaled_x + (scaled_size - text_w)/2, 
+                 scaled_y + scaled_size + 20 * scale, text_color);
     }
     
     // Simple home indicator
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    int indicator_w = 200 * scale;
+    int indicator_h = 8 * scale;
+    draw_rounded_rect(buf, screen_w/2 - indicator_w/2, screen_h - 80, 
+                     indicator_w, indicator_h, 4 * scale, indicator_color);
 }
 
 void draw_app_screen(uint32_t *buf) {
@@ -464,7 +581,7 @@ void draw_app_screen(uint32_t *buf) {
 
 void update_transitions(void) {
     if (is_transitioning) {
-        transition_progress += 0.05f; // Smooth transition speed
+        transition_progress += 0.04f; // Smooth transition speed
         
         if (transition_progress >= 1.0f) {
             transition_progress = 1.0f;
@@ -480,12 +597,12 @@ void update_transitions(void) {
 
 void handle_touch_input(void) {
     // Handle sphere dragging for lock screen
-    if (current_state == LOCK_SCREEN) {
+    if (current_state == LOCK_SCREEN && !is_transitioning) {
         if (touch.pressed && !touch.last_pressed) {
             // Start of touch
             if (is_touching_sphere(touch.x, touch.y)) {
                 sphere.is_dragging = 1;
-                sphere.drag_offset_y = touch.y - sphere.y;
+                sphere.drag_offset_y = touch.y - (int)sphere.y;
                 sphere.velocity_y = 0;
                 printf("🎯 Started dragging sphere\n");
                 return;
@@ -507,7 +624,7 @@ void handle_touch_input(void) {
             sphere.is_dragging = 0;
             
             // Check if dragged high enough to unlock
-            float unlock_threshold = sphere.capsule_top + 50;
+            float unlock_threshold = sphere.capsule_top + 100;
             if (sphere.y <= unlock_threshold) {
                 printf("🔓 Sphere unlocked! Going to PIN entry\n");
                 animation_target_state = PIN_ENTRY;
@@ -527,7 +644,7 @@ void handle_touch_input(void) {
     }
     
     // Handle PIN entry
-    if (current_state == PIN_ENTRY && touch.pressed && !touch.action_taken) {
+    if (current_state == PIN_ENTRY && !is_transitioning && touch.pressed && !touch.action_taken) {
         char pin_labels[] = "123456789*0#";
         int pad_start_x = screen_w/2 - 240;
         int pad_start_y = STATUS_HEIGHT + 250;
@@ -570,7 +687,7 @@ void handle_touch_input(void) {
     }
     
     // Handle home screen app launching
-    if (current_state == HOME_SCREEN && touch.pressed && !touch.action_taken) {
+    if (current_state == HOME_SCREEN && !is_transitioning && touch.pressed && !touch.action_taken) {
         int apps_per_row = 3;
         int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
         int start_x = (screen_w - grid_width) / 2;
@@ -714,11 +831,12 @@ int main(void) {
     
     animation_target_state = current_state;
     
-    printf("📱 SIMPLE iOS Phone OS - Physics Sphere Unlock! 🚀\n");
-    printf("🔵 Drag the glowing sphere up to unlock\n");
-    printf("🎾 Physics-based - falls back down if released\n");
-    printf("🔓 Drag to top → PIN entry → Home screen\n");
-    printf("⚡ Smooth transitions throughout\n");
+    printf("📱 ENHANCED iOS Phone OS - Big Sphere & Smooth Transitions! 🚀\n");
+    printf("🔵 HUGE draggable sphere (60px radius) in wide capsule\n");
+    printf("🎾 Physics-based with satisfying bounce and fall\n");
+    printf("✨ Smooth cubic-ease transitions between all screens\n");
+    printf("🎭 Lock screen fades, PIN slides in, Home scales up\n");
+    printf("🔓 Drag sphere to top → PIN → Home with animations\n");
     
     while (1) {
         read_touch_events();
@@ -726,7 +844,7 @@ int main(void) {
         update_physics_sphere();
         update_transitions();
         
-        // Draw current screen
+        // Draw current screen with transitions
         switch (current_state) {
             case LOCK_SCREEN: draw_lock_screen(backbuffer); break;
             case PIN_ENTRY: draw_pin_entry(backbuffer); break;
