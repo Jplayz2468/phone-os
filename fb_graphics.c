@@ -116,6 +116,7 @@ void add_open_app(int app_id);
 void remove_open_app(int app_id);
 int can_use_home_gesture(AppState state);
 AppState get_home_gesture_target(AppState current);
+int should_process_home_gesture(AppState current);
 float calculate_scale_from_drag(int drag_distance);
 int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t duration);
 void apply_fast_blur(uint32_t *buf, float blur_amount);
@@ -328,11 +329,27 @@ AppState get_home_gesture_target(AppState current) {
         case APP_SCREEN:
             return HOME_SCREEN;
         case HOME_SCREEN:
+            // Only go to app switcher if there are actually open apps
+            // If no open apps, return same state (no transition)
             return (num_open_apps > 0) ? APP_SWITCHER : HOME_SCREEN;
         case APP_SWITCHER:
             return HOME_SCREEN;
         default:
             return HOME_SCREEN;
+    }
+}
+
+// NEW: Check if home gesture should be allowed based on current state and open apps
+int should_process_home_gesture(AppState current) {
+    switch (current) {
+        case PIN_ENTRY:
+        case APP_SCREEN:
+        case APP_SWITCHER:
+            return 1; // Always allow these
+        case HOME_SCREEN:
+            return (num_open_apps > 0); // Only allow if there are open apps to switch to
+        default:
+            return 0;
     }
 }
 
@@ -490,7 +507,17 @@ void draw_home_screen(uint32_t *buf) {
     }
     
     if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+        // Home indicator color changes based on whether app switcher is available
+        uint32_t indicator_color = (num_open_apps > 0) ? COLOR_BLUE : COLOR_WHITE;
+        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, indicator_color);
+        
+        // Show helpful text when apps are open
+        if (num_open_apps > 0) {
+            char app_text[64];
+            snprintf(app_text, sizeof(app_text), "Swipe up: %d open app%s", 
+                     num_open_apps, num_open_apps == 1 ? "" : "s");
+            draw_text_centered(buf, app_text, 32, screen_h - 120, COLOR_LIGHT_GRAY);
+        }
     }
 }
 
@@ -625,13 +652,20 @@ void handle_touch_input(void) {
         }
         
         // Use precise home indicator detection for home gesture (not the broad bottom area)
-        if (is_touching_home_indicator(touch.x, touch.y) && can_use_home_gesture(current_state)) {
+        if (is_touching_home_indicator(touch.x, touch.y) && 
+            can_use_home_gesture(current_state) && 
+            should_process_home_gesture(current_state)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
             touch.finger_x = touch.x;
             touch.finger_y = touch.y;
             printf("🎯 Started home gesture on indicator - finger at (%d, %d) in state %d\n", 
                    touch.x, touch.y, current_state);
+            return;
+        } else if (is_touching_home_indicator(touch.x, touch.y) && 
+                   can_use_home_gesture(current_state) && 
+                   !should_process_home_gesture(current_state)) {
+            printf("🚫 Home gesture blocked - no open apps to switch to\n");
             return;
         }
     }
@@ -698,7 +732,8 @@ void handle_touch_input(void) {
         // PRIORITY 3: Fallback quick swipe detection (for non-lock-screen states)
         if (current_state != LOCK_SCREEN && 
             is_touching_home_indicator(touch.start_x, touch.start_y) && 
-            can_use_home_gesture(current_state)) {
+            can_use_home_gesture(current_state) &&
+            should_process_home_gesture(current_state)) {
             int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
                                               touch.x, touch.y, touch_duration);
             if (quick_swipe) {
@@ -952,12 +987,12 @@ int main(void) {
     
     animation_target_state = current_state;
     
-    printf("📱 ENHANCED iOS Phone OS - Precise Home Indicator! 🚀\n");
+    printf("📱 ENHANCED iOS Phone OS - Smart App Switcher! 🚀\n");
     printf("🔓 Lock screen: swipe up from bottom → PIN entry\n");
     printf("🎯 Home indicator: precise bar hitbox extends to edge\n");
-    printf("🏠 Home screen: swipe up indicator → app switcher (if apps open)\n");
+    printf("🏠 Home screen: swipe up → app switcher (only if apps open!)\n");
     printf("📱 App switcher: tap to open, swipe up to close\n");
-    printf("⚡ Much easier to grab the home indicator now!\n");
+    printf("🔵 Blue indicator = apps available, White = no apps\n");
     
     while (1) {
         read_touch_events();
