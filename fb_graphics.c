@@ -37,8 +37,8 @@
 // Enhanced touch constants
 #define SWIPE_THRESHOLD 100
 #define SWIPE_TIME_LIMIT 300
-#define BOTTOM_AREA_HEIGHT 0.45f  // Increased to bottom 45% of screen
-#define EDGE_THRESHOLD 80         // Increased edge threshold
+#define BOTTOM_AREA_HEIGHT 0.45f  // Bottom 45% of screen for home gesture (was 30%)
+#define EDGE_THRESHOLD 100        // 100 pixels from bottom edge (was 50)
 
 typedef enum { 
     LOCK_SCREEN, 
@@ -111,8 +111,6 @@ void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, u
 void get_current_time(char *time_str, char *date_str);
 void draw_status_bar(uint32_t *buf);
 int is_in_bottom_area(int touch_x, int touch_y);
-int is_in_extreme_bottom_area(int touch_x, int touch_y);
-int is_on_pin_button_area(int touch_x, int touch_y);
 void add_open_app(int app_id);
 void remove_open_app(int app_id);
 int can_use_home_gesture(AppState state);
@@ -277,25 +275,6 @@ void draw_status_bar(uint32_t *buf) {
 int is_in_bottom_area(int touch_x, int touch_y) {
     return (touch_y >= screen_h * (1.0f - BOTTOM_AREA_HEIGHT)) || 
            (touch_y >= screen_h - EDGE_THRESHOLD);
-}
-
-// Check if touch is in the very bottom gesture zone (for PIN entry protection)
-int is_in_extreme_bottom_area(int touch_x, int touch_y) {
-    return (touch_y >= screen_h * 0.85f) || // Bottom 15% of screen
-           (touch_y >= screen_h - EDGE_THRESHOLD);
-}
-
-// Check if touch might be on PIN buttons (to avoid gesture conflicts)
-int is_on_pin_button_area(int touch_x, int touch_y) {
-    if (current_state != PIN_ENTRY) return 0;
-    
-    int pad_start_x = screen_w/2 - 240;
-    int pad_start_y = STATUS_HEIGHT + 250;
-    int pad_end_x = pad_start_x + 480; // 3 columns * 160
-    int pad_end_y = pad_start_y + 480; // 3 rows * 160
-    
-    return (touch_x >= pad_start_x - 50 && touch_x <= pad_end_x + 50 &&
-            touch_y >= pad_start_y - 50 && touch_y <= pad_end_y + 50);
 }
 
 void add_open_app(int app_id) {
@@ -614,30 +593,12 @@ void handle_touch_input(void) {
         touch.start_y = touch.y;
         touch.swipe_detected = 0;
         
-        // Special handling for lock screen - use full bottom area for unlock
+        // Special handling for lock screen - don't start home gesture, just track for unlock swipe
         if (current_state == LOCK_SCREEN) {
-            printf("🔒 Lock screen touch at (%d, %d) - bottom_area: %d\n", 
-                   touch.x, touch.y, is_in_bottom_area(touch.x, touch.y));
+            printf("🔒 Lock screen touch at (%d, %d)\n", touch.x, touch.y);
             return; // Just track the touch, don't start any gestures
         }
         
-        // For PIN entry, be more selective - avoid PIN button area but allow extreme bottom
-        if (current_state == PIN_ENTRY) {
-            if (is_on_pin_button_area(touch.x, touch.y)) {
-                printf("🔢 Touch on PIN button area - no gesture\n");
-                return; // Let PIN button handling take over
-            } else if (is_in_extreme_bottom_area(touch.x, touch.y)) {
-                touch.is_dragging_indicator = 1;
-                touch.drag_start_y = touch.y;
-                touch.finger_x = touch.x;
-                touch.finger_y = touch.y;
-                printf("🎯 Started home gesture from extreme bottom in PIN entry\n");
-                return;
-            }
-            return; // For PIN entry, only allow gestures from extreme bottom
-        }
-        
-        // For other states, use full enlarged bottom area
         if (is_in_bottom_area(touch.x, touch.y) && can_use_home_gesture(current_state)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
@@ -662,20 +623,20 @@ void handle_touch_input(void) {
     if (!touch.pressed && touch.last_pressed) {
         uint64_t touch_duration = get_time_ms() - touch.touch_start_time;
         
-        // PRIORITY 1: Handle lock screen swipe - must come first! (now with larger area)
+        // PRIORITY 1: Handle lock screen swipe - must come first!
         if (current_state == LOCK_SCREEN) {
             int swipe_dy = touch.start_y - touch.y;
             printf("🔒 Lock screen release: swipe_dy=%d, start_y=%d, end_y=%d, bottom_area=%d\n", 
                    swipe_dy, touch.start_y, touch.y, is_in_bottom_area(touch.start_x, touch.start_y));
             
-            // Use the enlarged bottom area for easier unlock
+            // More lenient detection for lock screen unlock
             if (swipe_dy > 50 && is_in_bottom_area(touch.start_x, touch.start_y)) {
-                printf("🔓 Lock screen swipe → PIN entry (using enlarged area)\n");
+                printf("🔓 Lock screen swipe → PIN entry\n");
                 current_state = PIN_ENTRY;
                 animation_target_state = PIN_ENTRY;
                 return;
             } else {
-                printf("🔒 Lock screen swipe not detected (need swipe_dy > 50 from enlarged bottom area)\n");
+                printf("🔒 Lock screen swipe not detected (need swipe_dy > 50 from bottom area)\n");
                 return; // Don't process any other gestures on lock screen
             }
         }
@@ -709,31 +670,21 @@ void handle_touch_input(void) {
         }
         
         // PRIORITY 3: Fallback quick swipe detection (for non-lock-screen states)
-        if (current_state != LOCK_SCREEN && can_use_home_gesture(current_state)) {
-            int in_gesture_area = 0;
-            
-            // For PIN entry, only allow from extreme bottom to avoid button conflicts
-            if (current_state == PIN_ENTRY) {
-                in_gesture_area = is_in_extreme_bottom_area(touch.start_x, touch.start_y);
-            } else {
-                // For other states, use full enlarged bottom area
-                in_gesture_area = is_in_bottom_area(touch.start_x, touch.start_y);
-            }
-            
-            if (in_gesture_area) {
-                int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
-                                                  touch.x, touch.y, touch_duration);
-                if (quick_swipe) {
-                    AppState target = get_home_gesture_target(current_state);
-                    printf("🚀 Quick swipe to %s from state %d\n", 
-                           target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown",
-                           current_state);
-                    animation_target_state = target;
-                    target_scale = 0.0f;
-                    is_animating = 1;
-                    current_scale = 0.8f;
-                    return;
-                }
+        if (current_state != LOCK_SCREEN && 
+            is_in_bottom_area(touch.start_x, touch.start_y) && 
+            can_use_home_gesture(current_state)) {
+            int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
+                                              touch.x, touch.y, touch_duration);
+            if (quick_swipe) {
+                AppState target = get_home_gesture_target(current_state);
+                printf("🚀 Quick swipe to %s from state %d\n", 
+                       target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown",
+                       current_state);
+                animation_target_state = target;
+                target_scale = 0.0f;
+                is_animating = 1;
+                current_scale = 0.8f;
+                return;
             }
         }
         
@@ -975,12 +926,12 @@ int main(void) {
     
     animation_target_state = current_state;
     
-    printf("📱 ENHANCED iOS Phone OS - LARGE Gesture Areas! 🚀\n");
-    printf("🔓 Lock screen: bottom 45%% swipe up → PIN entry\n");
-    printf("🎯 Apps/Home: bottom 45%% + edge = home gesture area\n");
-    printf("🔢 PIN entry: extreme bottom 15%% = home gesture (buttons protected)\n");
+    printf("📱 ENHANCED iOS Phone OS - App Switcher & Edge Gestures! 🚀\n");
+    printf("🔓 Lock screen: swipe up → PIN entry\n");
+    printf("🎯 PIN/Apps: bottom 45%% + edge = LARGE home gesture area\n");
     printf("🏠 Home screen: swipe up → app switcher (if apps open)\n");
     printf("📱 App switcher: tap to open, swipe up to close\n");
+    printf("⚡ Gestures work from screen edge and below\n");
     
     while (1) {
         read_touch_events();
