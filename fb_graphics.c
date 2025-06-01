@@ -830,24 +830,39 @@ int main(void) {
             // Render target state as background (don't blur home screen)
             if (animation_target_state == HOME_SCREEN) {
                 draw_home_screen(backbuffer);
+                
+                // Only render scaled app if scale is large enough to be visible
+                if (current_scale > 0.15f) {
+                    switch (current_state) {
+                        case HOME_SCREEN: draw_home_screen(app_buffer); break;
+                        case APP_SCREEN: draw_app_screen(app_buffer); break;
+                        case APP_SWITCHER: draw_app_switcher(app_buffer); break;
+                    }
+                    
+                    if (touch.is_dragging_indicator) {
+                        draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
+                    } else {
+                        draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
+                    }
+                }
             } else {
                 draw_home_screen(backbuffer);
                 float blur_amount = (1.0f - current_scale) * 0.5f;
                 if (blur_amount > 0.1f) {
                     apply_fast_blur(backbuffer, blur_amount);
                 }
-            }
-            
-            switch (current_state) {
-                case HOME_SCREEN: draw_home_screen(app_buffer); break;
-                case APP_SCREEN: draw_app_screen(app_buffer); break;
-                case APP_SWITCHER: draw_app_switcher(app_buffer); break;
-            }
-            
-            if (touch.is_dragging_indicator) {
-                draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
-            } else {
-                draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
+                
+                switch (current_state) {
+                    case HOME_SCREEN: draw_home_screen(app_buffer); break;
+                    case APP_SCREEN: draw_app_screen(app_buffer); break;
+                    case APP_SWITCHER: draw_app_switcher(app_buffer); break;
+                }
+                
+                if (touch.is_dragging_indicator) {
+                    draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
+                } else {
+                    draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
+                }
             }
             
             if (touch.is_dragging_indicator) {
