@@ -311,11 +311,16 @@ AppState get_home_gesture_target(AppState current) {
 
 float calculate_scale_from_drag(int drag_distance) {
     if (drag_distance < 20) return 1.0f;
-    float max_drag = screen_h * 0.5f;
-    float normalized = (drag_distance - 20) / max_drag;
-    float scale = 1.0f - normalized * 0.6f;
-    if (scale < 0.4f) scale = 0.4f;
-    if (scale > 1.0f) scale = 1.0f;
+    
+    // Exponential scaling that starts fast and slows down
+    float normalized_drag = (drag_distance - 20) / 300.0f; // Normalize to 0-1 range over 300px
+    if (normalized_drag > 1.0f) normalized_drag = 1.0f;
+    
+    // Exponential curve: scale = 1.0 - (1.0 - min_scale) * (1 - e^(-4 * normalized_drag))
+    float min_scale = 0.25f; // Minimum scale it approaches but never quite reaches
+    float exponential_factor = 1.0f - expf(-4.0f * normalized_drag);
+    float scale = 1.0f - (1.0f - min_scale) * exponential_factor;
+    
     return scale;
 }
 
