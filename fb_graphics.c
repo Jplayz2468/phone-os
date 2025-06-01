@@ -44,13 +44,6 @@ typedef enum {
     APP_SWITCHER 
 } AppState;
 
-typedef enum {
-    ANIM_NONE,
-    ANIM_OPENING,
-    ANIM_CLOSING,
-    ANIM_SWITCHING
-} AnimationType;
-
 typedef struct {
     char name[32];
     uint32_t color;
@@ -95,11 +88,13 @@ int battery_level = 87;
 float current_scale = 1.0f;
 float target_scale = 1.0f;
 int is_animating = 0;
-AnimationType anim_type = ANIM_NONE;
-float anim_progress = 0.0f;
-int icon_start_x = 0, icon_start_y = 0;
-int icon_target_x = 0, icon_target_y = 0;
 stbtt_fontinfo font;
+
+// App opening/closing animations
+int is_app_opening = 0;
+int is_app_closing = 0;
+float app_anim_progress = 0.0f;
+int app_icon_x = 0, app_icon_y = 0; // Position of the app icon being animated
 
 // App switcher state
 int open_apps[12];  // Track which apps are open (1 = open, 0 = closed)
@@ -119,15 +114,11 @@ void draw_status_bar(uint32_t *buf);
 int is_touching_home_indicator(int touch_x, int touch_y);
 void add_open_app(int app_id);
 void remove_open_app(int app_id);
-void get_icon_position(int app_id, int *x, int *y);
-void start_app_opening_animation(int app_id);
-void start_app_closing_animation(void);
 AppState get_home_gesture_target(AppState current);
 float calculate_scale_from_drag(int drag_distance);
 int is_quick_swipe_up(int start_x, int start_y, int end_x, int end_y, uint64_t duration);
 void apply_fast_blur(uint32_t *buf, float blur_amount);
 void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x, int finger_y);
-void draw_animated_window(uint32_t *dest, uint32_t *src, float scale, int center_x, int center_y);
 void draw_home_screen(uint32_t *buf);
 void draw_app_screen(uint32_t *buf);
 void draw_app_switcher(uint32_t *buf);
@@ -311,44 +302,6 @@ void remove_open_app(int app_id) {
     }
 }
 
-void get_icon_position(int app_id, int *x, int *y) {
-    int apps_per_row = 3;
-    int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
-    int start_x = (screen_w - grid_width) / 2;
-    int start_y = STATUS_HEIGHT + 80;
-    
-    int row = app_id / apps_per_row;
-    int col = app_id % apps_per_row;
-    *x = start_x + col * (ICON_SIZE + MARGIN) + ICON_SIZE/2; // Center of icon
-    *y = start_y + row * (ICON_SIZE + MARGIN * 2) + ICON_SIZE/2; // Center of icon
-}
-
-void start_app_opening_animation(int app_id) {
-    get_icon_position(app_id, &icon_start_x, &icon_start_y);
-    icon_target_x = screen_w / 2;
-    icon_target_y = screen_h / 2;
-    anim_type = ANIM_OPENING;
-    anim_progress = 0.0f;
-    current_scale = 0.1f;
-    target_scale = 1.0f;
-    is_animating = 1;
-    printf("🚀 Opening animation started for %s\n", apps[app_id].name);
-}
-
-void start_app_closing_animation(void) {
-    if (current_app >= 0) {
-        get_icon_position(current_app, &icon_target_x, &icon_target_y);
-        icon_start_x = screen_w / 2;
-        icon_start_y = screen_h / 2;
-        anim_type = ANIM_CLOSING;
-        anim_progress = 0.0f;
-        current_scale = current_scale; // Keep current scale
-        target_scale = 0.1f;
-        is_animating = 1;
-        printf("📱 Closing animation started for %s\n", apps[current_app].name);
-    }
-}
-
 AppState get_home_gesture_target(AppState current) {
     switch (current) {
         case APP_SCREEN:
@@ -411,53 +364,37 @@ void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x
     int scaled_w = (int)(screen_w * scale);
     int scaled_h = (int)(screen_h * scale);
     
-    // Position window so its bottom center is at the finger position
-    int center_x = finger_x;
-    int bottom_y = finger_y;
+    int center_x, bottom_y;
+    
+    // Handle app opening/closing animations - center on app icon
+    if (is_app_opening || is_app_closing) {
+        center_x = app_icon_x + ICON_SIZE/2; // Center of app icon
+        bottom_y = app_icon_y + ICON_SIZE/2 + scaled_h/2; // Center vertically on icon
+    } else {
+        // Normal gesture mode - position window so its bottom center is at the finger position
+        center_x = finger_x;
+        bottom_y = finger_y;
+    }
     
     // Keep window on screen horizontally
     if (center_x - scaled_w/2 < 0) center_x = scaled_w/2;
     if (center_x + scaled_w/2 > screen_w) center_x = screen_w - scaled_w/2;
     
-    // Keep window on screen vertically (bottom anchored)
-    if (bottom_y - scaled_h < 0) bottom_y = scaled_h;
-    if (bottom_y > screen_h) bottom_y = screen_h;
+    // Keep window on screen vertically
+    if (is_app_opening || is_app_closing) {
+        // For app animations, keep it centered vertically 
+        int center_y = bottom_y - scaled_h/2;
+        if (center_y - scaled_h/2 < 0) center_y = scaled_h/2;
+        if (center_y + scaled_h/2 > screen_h) center_y = screen_h - scaled_h/2;
+        bottom_y = center_y + scaled_h/2;
+    } else {
+        // For gestures, keep bottom anchored
+        if (bottom_y - scaled_h < 0) bottom_y = scaled_h;
+        if (bottom_y > screen_h) bottom_y = screen_h;
+    }
     
     int start_x = center_x - scaled_w/2;
     int start_y = bottom_y - scaled_h;
-    
-    for (int y = 0; y < scaled_h; y++) {
-        int dest_y = start_y + y;
-        if (dest_y < 0 || dest_y >= screen_h) continue;
-        
-        int src_y = (int)(y / scale);
-        if (src_y >= screen_h) continue;
-        
-        for (int x = 0; x < scaled_w; x++) {
-            int dest_x = start_x + x;
-            if (dest_x < 0 || dest_x >= screen_w) continue;
-            
-            int src_x = (int)(x / scale);
-            if (src_x >= screen_w) continue;
-            
-            dest[dest_y * screen_w + dest_x] = src[src_y * screen_w + src_x];
-        }
-    }
-}
-
-void draw_animated_window(uint32_t *dest, uint32_t *src, float scale, int center_x, int center_y) {
-    int scaled_w = (int)(screen_w * scale);
-    int scaled_h = (int)(screen_h * scale);
-    
-    // Position window centered on the given point
-    int start_x = center_x - scaled_w/2;
-    int start_y = center_y - scaled_h/2;
-    
-    // Keep window on screen
-    if (start_x < 0) start_x = 0;
-    if (start_y < 0) start_y = 0;
-    if (start_x + scaled_w > screen_w) start_x = screen_w - scaled_w;
-    if (start_y + scaled_h > screen_h) start_y = screen_h - scaled_h;
     
     for (int y = 0; y < scaled_h; y++) {
         int dest_y = start_y + y;
@@ -595,58 +532,72 @@ void draw_app_switcher(uint32_t *buf) {
 }
 
 void update_animations(void) {
+    // Handle app opening animation
+    if (is_app_opening) {
+        app_anim_progress += 0.25f; // Fast opening animation
+        if (app_anim_progress >= 1.0f) {
+            app_anim_progress = 1.0f;
+            is_app_opening = 0;
+            current_scale = 1.0f;
+            printf("✅ App opening complete\n");
+        } else {
+            // Ease out: starts fast, slows down
+            float t = app_anim_progress;
+            float eased = 1.0f - (1.0f - t) * (1.0f - t);
+            current_scale = 0.1f + eased * 0.9f; // Scale from 10% to 100%
+        }
+        return;
+    }
+    
+    // Handle app closing animation
+    if (is_app_closing) {
+        app_anim_progress += 0.2f; // Smooth closing animation
+        if (app_anim_progress >= 1.0f) {
+            app_anim_progress = 1.0f;
+            is_app_closing = 0;
+            current_state = HOME_SCREEN;
+            animation_target_state = HOME_SCREEN;
+            current_scale = 1.0f;
+            target_scale = 1.0f;
+            printf("✅ App closing complete\n");
+        } else {
+            // Ease in: starts slow, speeds up
+            float t = app_anim_progress;
+            float eased = t * t;
+            current_scale = 1.0f - eased * 0.9f; // Scale from 100% to 10%
+        }
+        return;
+    }
+    
+    // Handle regular state transitions
     if (is_animating) {
-        if (anim_type == ANIM_OPENING || anim_type == ANIM_CLOSING) {
-            anim_progress += 0.2f; // Fast, satisfying animation
+        float diff = target_scale - current_scale;
+        if (fabs(diff) < 0.01f || (target_scale == 0.0f && current_scale < 0.05f)) {
+            current_scale = target_scale;
+            is_animating = 0;
             
-            if (anim_progress >= 1.0f) {
-                anim_progress = 1.0f;
-                is_animating = 0;
-                
-                if (anim_type == ANIM_OPENING) {
-                    current_state = APP_SCREEN;
+            if (animation_target_state != current_state) {
+                current_state = animation_target_state;
+                if (current_state == HOME_SCREEN) {
                     current_scale = 1.0f;
                     target_scale = 1.0f;
-                    printf("✅ App opened\n");
-                } else if (anim_type == ANIM_CLOSING) {
-                    current_state = HOME_SCREEN;
-                    current_scale = 1.0f;
-                    target_scale = 1.0f;
-                    printf("✅ App closed\n");
                 }
-                anim_type = ANIM_NONE;
-            } else {
-                // Smooth easing for scale
-                float t = anim_progress;
-                float eased = t * t * (3.0f - 2.0f * t); // Smoothstep
-                current_scale = (1.0f - eased) * (anim_type == ANIM_OPENING ? 0.1f : current_scale) + 
-                               eased * target_scale;
+                printf("✅ Animation complete → %s\n", 
+                    current_state == HOME_SCREEN ? "Home" : 
+                    current_state == APP_SWITCHER ? "App Switcher" : "App");
             }
         } else {
-            // Regular switching animation
-            float diff = target_scale - current_scale;
-            if (fabs(diff) < 0.01f || (target_scale == 0.0f && current_scale < 0.05f)) {
-                current_scale = target_scale;
-                is_animating = 0;
-                
-                if (animation_target_state != current_state) {
-                    current_state = animation_target_state;
-                    if (current_state == HOME_SCREEN) {
-                        current_scale = 1.0f;
-                        target_scale = 1.0f;
-                    }
-                    printf("✅ Animation complete → %s\n", 
-                        current_state == HOME_SCREEN ? "Home" : 
-                        current_state == APP_SWITCHER ? "App Switcher" : "App");
-                }
-            } else {
-                current_scale += diff * 0.3f;
-            }
+            current_scale += diff * 0.3f;
         }
     }
 }
 
 void handle_touch_input(void) {
+    // Block touch handling during app opening/closing animations
+    if (is_app_opening || is_app_closing) {
+        return;
+    }
+    
     // Handle touch press - start gesture tracking
     if (touch.pressed && !touch.last_pressed) {
         touch.touch_start_time = get_time_ms();
@@ -694,29 +645,39 @@ void handle_touch_input(void) {
                 AppState target = get_home_gesture_target(current_state);
                 
                 if (target != current_state) {
-                    if (target == HOME_SCREEN && current_state == APP_SCREEN) {
-                        // Start closing animation
-                        start_app_closing_animation();
+                    printf("🏠 Home gesture → %s\n", 
+                           target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown");
+                    
+                    // Special handling for app closing animation
+                    if (current_state == APP_SCREEN && target == HOME_SCREEN) {
+                        // Store current app icon position for closing animation
+                        int apps_per_row = 3;
+                        int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
+                        int start_x = (screen_w - grid_width) / 2;
+                        int start_y = STATUS_HEIGHT + 80;
+                        int row = current_app / apps_per_row;
+                        int col = current_app % apps_per_row;
+                        app_icon_x = start_x + col * (ICON_SIZE + MARGIN);
+                        app_icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
+                        
+                        is_app_closing = 1;
+                        app_anim_progress = 0.0f;
+                        printf("🎬 Starting app closing animation\n");
                     } else {
-                        printf("🏠 Home gesture → %s\n", 
-                               target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown");
                         animation_target_state = target;
                         target_scale = 0.0f;
                         is_animating = 1;
-                        anim_type = ANIM_SWITCHING;
                     }
                 } else {
                     printf("🏠 Home gesture ignored (same state)\n");
                     target_scale = 1.0f;
                     is_animating = 1;
-                    anim_type = ANIM_SWITCHING;
                 }
             } else {
                 printf("↩️ Home gesture cancelled\n");
                 animation_target_state = current_state;
                 target_scale = 1.0f;
                 is_animating = 1;
-                anim_type = ANIM_SWITCHING;
             }
             
             touch.is_dragging_indicator = 0;
@@ -731,17 +692,30 @@ void handle_touch_input(void) {
             if (quick_swipe) {
                 AppState target = get_home_gesture_target(current_state);
                 if (target != current_state) {
-                    if (target == HOME_SCREEN && current_state == APP_SCREEN) {
-                        // Start closing animation
-                        start_app_closing_animation();
+                    printf("🚀 Quick home swipe → %s\n", 
+                           target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown");
+                    
+                    // Special handling for quick app closing
+                    if (current_state == APP_SCREEN && target == HOME_SCREEN) {
+                        // Store current app icon position for closing animation
+                        int apps_per_row = 3;
+                        int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
+                        int start_x = (screen_w - grid_width) / 2;
+                        int start_y = STATUS_HEIGHT + 80;
+                        int row = current_app / apps_per_row;
+                        int col = current_app % apps_per_row;
+                        app_icon_x = start_x + col * (ICON_SIZE + MARGIN);
+                        app_icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
+                        
+                        is_app_closing = 1;
+                        app_anim_progress = 0.0f;
+                        current_scale = 0.8f; // Start from gesture scale
+                        printf("🎬 Starting quick app closing animation\n");
                     } else {
-                        printf("🚀 Quick home swipe → %s\n", 
-                               target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown");
                         animation_target_state = target;
                         target_scale = 0.0f;
                         is_animating = 1;
                         current_scale = 0.8f;
-                        anim_type = ANIM_SWITCHING;
                     }
                 }
                 return;
@@ -769,8 +743,19 @@ void handle_touch_input(void) {
                 touch.action_taken = 1;
                 current_app = i;
                 add_open_app(i);
-                start_app_opening_animation(i);
-                printf("🚀 Launching: %s\n", apps[i].name);
+                
+                // Store app icon position for opening animation
+                app_icon_x = icon_x;
+                app_icon_y = icon_y;
+                
+                // Start app opening animation
+                current_state = APP_SCREEN;
+                animation_target_state = APP_SCREEN;
+                is_app_opening = 1;
+                app_anim_progress = 0.0f;
+                current_scale = 0.1f; // Start small
+                
+                printf("🎬 Starting app opening animation for: %s\n", apps[i].name);
                 return;
             }
         }
@@ -957,59 +942,68 @@ int main(void) {
         handle_touch_input();
         update_animations();
         
-        if (current_scale >= 0.98f && !touch.is_dragging_indicator && anim_type == ANIM_NONE) {
+        if (current_scale >= 0.98f && !touch.is_dragging_indicator && !is_app_opening && !is_app_closing) {
             switch (current_state) {
                 case HOME_SCREEN: draw_home_screen(backbuffer); break;
                 case APP_SCREEN: draw_app_screen(backbuffer); break;
                 case APP_SWITCHER: draw_app_switcher(backbuffer); break;
             }
         } else {
-            // Render target state as background (don't blur home screen)
-            if (animation_target_state == HOME_SCREEN || anim_type == ANIM_CLOSING) {
-                draw_home_screen(backbuffer);
-                
-                // Only render scaled app if scale is large enough to be visible
-                if (current_scale > 0.15f) {
+            // Handle app opening animation
+            if (is_app_opening) {
+                draw_home_screen(backbuffer); // Background
+                draw_app_screen(app_buffer); // App to animate
+                draw_scaled_window(backbuffer, app_buffer, current_scale, 0, 0); // Use stored icon position
+            }
+            // Handle app closing animation  
+            else if (is_app_closing) {
+                draw_home_screen(backbuffer); // Background
+                draw_app_screen(app_buffer); // App to animate
+                draw_scaled_window(backbuffer, app_buffer, current_scale, 0, 0); // Use stored icon position
+            }
+            // Handle regular gesture animations
+            else {
+                // Render target state as background (don't blur home screen)
+                if (animation_target_state == HOME_SCREEN) {
+                    draw_home_screen(backbuffer);
+                    
+                    // Only render scaled app if scale is large enough to be visible
+                    if (current_scale > 0.15f) {
+                        switch (current_state) {
+                            case HOME_SCREEN: draw_home_screen(app_buffer); break;
+                            case APP_SCREEN: draw_app_screen(app_buffer); break;
+                            case APP_SWITCHER: draw_app_switcher(app_buffer); break;
+                        }
+                        
+                        if (touch.is_dragging_indicator) {
+                            draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
+                        } else {
+                            draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
+                        }
+                    }
+                } else {
+                    draw_home_screen(backbuffer);
+                    float blur_amount = (1.0f - current_scale) * 0.5f;
+                    if (blur_amount > 0.1f) {
+                        apply_fast_blur(backbuffer, blur_amount);
+                    }
+                    
                     switch (current_state) {
                         case HOME_SCREEN: draw_home_screen(app_buffer); break;
                         case APP_SCREEN: draw_app_screen(app_buffer); break;
                         case APP_SWITCHER: draw_app_switcher(app_buffer); break;
                     }
                     
-                    if (anim_type == ANIM_OPENING || anim_type == ANIM_CLOSING) {
-                        // Interpolate position during animation
-                        float t = anim_progress;
-                        float eased = t * t * (3.0f - 2.0f * t); // Smoothstep
-                        int anim_x = (1.0f - eased) * icon_start_x + eased * icon_target_x;
-                        int anim_y = (1.0f - eased) * icon_start_y + eased * icon_target_y;
-                        draw_animated_window(backbuffer, app_buffer, current_scale, anim_x, anim_y);
-                    } else if (touch.is_dragging_indicator) {
+                    if (touch.is_dragging_indicator) {
                         draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
                     } else {
                         draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
                     }
                 }
-            } else {
-                draw_home_screen(backbuffer);
-                float blur_amount = (1.0f - current_scale) * 0.5f;
-                if (blur_amount > 0.1f) {
-                    apply_fast_blur(backbuffer, blur_amount);
-                }
-                
-                switch (current_state) {
-                    case HOME_SCREEN: draw_home_screen(app_buffer); break;
-                    case APP_SCREEN: draw_app_screen(app_buffer); break;
-                    case APP_SWITCHER: draw_app_switcher(app_buffer); break;
-                }
-                
-                if (touch.is_dragging_indicator) {
-                    draw_scaled_window(backbuffer, app_buffer, current_scale, touch.finger_x, touch.finger_y);
-                } else {
-                    draw_scaled_window(backbuffer, app_buffer, current_scale, screen_w/2, screen_h/2);
-                }
             }
             
-            if (touch.is_dragging_indicator) {
+            // Draw nav bar during gesture (not during app open/close animations)
+            if (touch.is_dragging_indicator && !is_app_opening && !is_app_closing) {
                 int scaled_h = (int)(screen_h * current_scale);
                 int bar_w = 240;
                 int bar_x = touch.finger_x - bar_w/2;
@@ -1022,26 +1016,6 @@ int main(void) {
                 if (bar_y > screen_h - 24) bar_y = screen_h - 24;
                 
                 draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, 24, 12, COLOR_BLUE);
-            } else if (anim_type == ANIM_OPENING || anim_type == ANIM_CLOSING) {
-                // Show nav bar during opening/closing animations if we're in app view
-                if (current_state == APP_SCREEN && current_scale > 0.3f) {
-                    float t = anim_progress;
-                    float eased = t * t * (3.0f - 2.0f * t);
-                    int anim_x = (1.0f - eased) * icon_start_x + eased * icon_target_x;
-                    int anim_y = (1.0f - eased) * icon_start_y + eased * icon_target_y;
-                    
-                    int scaled_h = (int)(screen_h * current_scale);
-                    int bar_w = (int)(200 * current_scale);
-                    int bar_h = (int)(24 * current_scale);
-                    int bar_x = anim_x - bar_w/2;
-                    int bar_y = anim_y + scaled_h/2 - (int)(80 * current_scale);
-                    
-                    if (bar_x >= 0 && bar_x + bar_w <= screen_w && 
-                        bar_y >= 0 && bar_y + bar_h <= screen_h) {
-                        draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, bar_h, 
-                                        (int)(12 * current_scale), COLOR_WHITE);
-                    }
-                }
             }
         }
         
