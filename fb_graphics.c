@@ -442,7 +442,7 @@ void draw_app_screen(uint32_t *buf) {
     
     // Draw home indicator on app screen
     if (current_scale >= 0.98f && !touch.is_dragging_indicator) {
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 24, 12, COLOR_WHITE);
     }
 }
 
@@ -452,7 +452,7 @@ void draw_app_switcher(uint32_t *buf) {
     
     if (num_open_apps == 0) {
         draw_text_centered(buf, "No open apps", MEDIUM_TEXT, screen_h/2, COLOR_GRAY);
-        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+        draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 24, 12, COLOR_WHITE);
         return;
     }
     
@@ -496,7 +496,7 @@ void draw_app_switcher(uint32_t *buf) {
     }
     
     draw_text_centered(buf, "Tap to open • Swipe up on card to close", SMALL_TEXT, screen_h - 150, COLOR_LIGHT_GRAY);
-    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 8, 4, COLOR_WHITE);
+    draw_rounded_rect(buf, screen_w/2 - 100, screen_h - 80, 200, 24, 12, COLOR_WHITE);
 }
 
 void update_animations(void) {
@@ -854,7 +854,7 @@ int main(void) {
                 if (bar_x < 20) bar_x = 20;
                 if (bar_x + bar_w > screen_w - 20) bar_x = screen_w - 20 - bar_w;
                 
-                draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, 8, 4, COLOR_BLUE);
+                draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, 24, 12, COLOR_BLUE);
             }
         }
         
