@@ -721,129 +721,148 @@ void handle_touch_input(void) {
             }
         }
         
-        // NEW: Quick tap detection - register any tap that showed the red dot
-        uint64_t quick_tap_time = 600; // More generous time for taps
-        int small_movement = 80; // Allow some movement for taps
-        int dx = abs(touch.x - touch.start_x);
-        int dy = abs(touch.y - touch.start_y);
-        int movement = sqrt(dx*dx + dy*dy);
-        
-        if (touch_duration < quick_tap_time && movement < small_movement) {
-            printf("👆 Quick tap detected (movement: %d, duration: %llu)\n", movement, touch_duration);
-            // Process as tap even if it was very quick
-            touch.action_taken = 0; // Allow tap processing
-        }
-    }
-    
-    // Button handling (only when not in gesture mode and not already acted)
-    if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
-    
-    if (current_state == PIN_ENTRY) {
-        char pin_labels[] = "123456789*0#";
-        int pad_start_x = screen_w/2 - 240;
-        int pad_start_y = STATUS_HEIGHT + 250;
-        
-        for (int i = 0; i < 12; i++) {
-            if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
+        // Handle app switcher card swipes (only on touch release)
+        if (current_state == APP_SWITCHER && num_open_apps > 0) {
+            int cards_per_row = 2;
+            int card_w = 320;
+            int card_h = 200;
+            int margin_x = 60;
+            int margin_y = 40;
             
-            int row = i / 3;
-            int col = i % 3;
-            int btn_x = pad_start_x + col * 160;
-            int btn_y = pad_start_y + row * 160;
-            int center_x = btn_x + 80;
-            int center_y = btn_y + 80;
+            int grid_width = cards_per_row * card_w + (cards_per_row - 1) * margin_x;
+            int start_x = (screen_w - grid_width) / 2;
+            int start_y = STATUS_HEIGHT + 100;
             
-            int dx = touch.x - center_x;
-            int dy = touch.y - center_y;
-            if ((dx*dx + dy*dy) <= (100*100)) {
-                touch.action_taken = 1;
-                printf("🔢 PIN button: %c\n", pin_labels[i]);
+            int card_index = 0;
+            for (int i = 0; i < APP_COUNT; i++) {
+                if (!open_apps[i]) continue;
                 
-                if (strlen(pin_input) < 4) {
-                    char digit[2] = {pin_labels[i], 0};
-                    strcat(pin_input, digit);
+                int row = card_index / cards_per_row;
+                int col = card_index % cards_per_row;
+                int x = start_x + col * (card_w + margin_x);
+                int y = start_y + row * (card_h + margin_y);
+                
+                if (touch.start_x >= x && touch.start_x < (x + card_w) &&
+                    touch.start_y >= y && touch.start_y < (y + card_h)) {
                     
-                    if (strlen(pin_input) == 4) {
-                        if (strcmp(pin_input, "1234") == 0) {
-                            printf("✅ Unlocked!\n");
+                    int swipe_dy = touch.start_y - touch.y;
+                    if (swipe_dy > 100 && touch_duration < 500) {
+                        remove_open_app(i);
+                        printf("❌ Closed app: %s\n", apps[i].name);
+                        
+                        if (num_open_apps == 0) {
                             current_state = HOME_SCREEN;
                             animation_target_state = HOME_SCREEN;
                         }
-                        memset(pin_input, 0, sizeof(pin_input));
+                        return;
+                    } else {
+                        // Regular tap - open the app
+                        current_app = i;
+                        current_state = APP_SCREEN;
+                        animation_target_state = APP_SCREEN;
+                        printf("🚀 Opened app: %s\n", apps[i].name);
+                        return;
                     }
                 }
-                return;
-            }
-        }
-    } else if (current_state == HOME_SCREEN) {
-        int apps_per_row = 3;
-        int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
-        int start_x = (screen_w - grid_width) / 2;
-        int start_y = STATUS_HEIGHT + 80;
-        
-        for (int i = 0; i < APP_COUNT && i < 12; i++) {
-            int row = i / apps_per_row;
-            int col = i % apps_per_row;
-            int icon_x = start_x + col * (ICON_SIZE + MARGIN);
-            int icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
-            
-            if (touch.x >= (icon_x - 50) && touch.x < (icon_x + ICON_SIZE + 50) &&
-                touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
-                touch.action_taken = 1;
-                current_app = i;
-                add_open_app(i);
-                current_state = APP_SCREEN;
-                animation_target_state = APP_SCREEN;
-                printf("🚀 Launched: %s\n", apps[i].name);
-                return;
-            }
-        }
-    } else if (current_state == APP_SWITCHER) {
-        if (num_open_apps == 0) return;
-        
-        int cards_per_row = 2;
-        int card_w = 320;
-        int card_h = 200;
-        int margin_x = 60;
-        int margin_y = 40;
-        
-        int grid_width = cards_per_row * card_w + (cards_per_row - 1) * margin_x;
-        int start_x = (screen_w - grid_width) / 2;
-        int start_y = STATUS_HEIGHT + 100;
-        
-        int card_index = 0;
-        for (int i = 0; i < APP_COUNT; i++) {
-            if (!open_apps[i]) continue;
-            
-            int row = card_index / cards_per_row;
-            int col = card_index % cards_per_row;
-            int x = start_x + col * (card_w + margin_x);
-            int y = start_y + row * (card_h + margin_y);
-            
-            if (touch.x >= x && touch.x < (x + card_w) &&
-                touch.y >= y && touch.y < (y + card_h)) {
-                touch.action_taken = 1;
                 
-                int swipe_dy = touch.start_y - touch.y;
-                if (swipe_dy > 100 && (get_time_ms() - touch.touch_start_time) < 500) {
-                    remove_open_app(i);
-                    printf("❌ Closed app: %s\n", apps[i].name);
+                card_index++;
+            }
+        }
+    }
+    
+    // Button handling (only on initial touch press, not continuously)
+    if (touch.pressed && !touch.last_pressed && !touch.action_taken && !touch.is_dragging_indicator) {
+        if (current_state == PIN_ENTRY) {
+            char pin_labels[] = "123456789*0#";
+            int pad_start_x = screen_w/2 - 240;
+            int pad_start_y = STATUS_HEIGHT + 250;
+            
+            for (int i = 0; i < 12; i++) {
+                if (pin_labels[i] == '*' || pin_labels[i] == '#') continue;
+                
+                int row = i / 3;
+                int col = i % 3;
+                int btn_x = pad_start_x + col * 160;
+                int btn_y = pad_start_y + row * 160;
+                int center_x = btn_x + 80;
+                int center_y = btn_y + 80;
+                
+                int dx = touch.x - center_x;
+                int dy = touch.y - center_y;
+                if ((dx*dx + dy*dy) <= (100*100)) {
+                    touch.action_taken = 1;
+                    printf("🔢 PIN button: %c\n", pin_labels[i]);
                     
-                    if (num_open_apps == 0) {
-                        current_state = HOME_SCREEN;
-                        animation_target_state = HOME_SCREEN;
+                    if (strlen(pin_input) < 4) {
+                        char digit[2] = {pin_labels[i], 0};
+                        strcat(pin_input, digit);
+                        
+                        if (strlen(pin_input) == 4) {
+                            if (strcmp(pin_input, "1234") == 0) {
+                                printf("✅ Unlocked!\n");
+                                current_state = HOME_SCREEN;
+                                animation_target_state = HOME_SCREEN;
+                            }
+                            memset(pin_input, 0, sizeof(pin_input));
+                        }
                     }
                     return;
-                } else {
+                }
+            }
+        } else if (current_state == HOME_SCREEN) {
+            int apps_per_row = 3;
+            int grid_width = apps_per_row * ICON_SIZE + (apps_per_row - 1) * MARGIN;
+            int start_x = (screen_w - grid_width) / 2;
+            int start_y = STATUS_HEIGHT + 80;
+            
+            for (int i = 0; i < APP_COUNT && i < 12; i++) {
+                int row = i / apps_per_row;
+                int col = i % apps_per_row;
+                int icon_x = start_x + col * (ICON_SIZE + MARGIN);
+                int icon_y = start_y + row * (ICON_SIZE + MARGIN * 2);
+                
+                if (touch.x >= (icon_x - 50) && touch.x < (icon_x + ICON_SIZE + 50) &&
+                    touch.y >= (icon_y - 50) && touch.y < (icon_y + ICON_SIZE + 50)) {
+                    touch.action_taken = 1;
                     current_app = i;
+                    add_open_app(i);
                     current_state = APP_SCREEN;
                     animation_target_state = APP_SCREEN;
-                    printf("🚀 Opened app: %s\n", apps[i].name);
+                    printf("🚀 Launched: %s\n", apps[i].name);
                     return;
                 }
             }
+        } else if (current_state == APP_SWITCHER) {
+            if (num_open_apps == 0) return;
             
-            card_index++;
+            int cards_per_row = 2;
+            int card_w = 320;
+            int card_h = 200;
+            int margin_x = 60;
+            int margin_y = 40;
+            
+            int grid_width = cards_per_row * card_w + (cards_per_row - 1) * margin_x;
+            int start_x = (screen_w - grid_width) / 2;
+            int start_y = STATUS_HEIGHT + 100;
+            
+            int card_index = 0;
+            for (int i = 0; i < APP_COUNT; i++) {
+                if (!open_apps[i]) continue;
+                
+                int row = card_index / cards_per_row;
+                int col = card_index % cards_per_row;
+                int x = start_x + col * (card_w + margin_x);
+                int y = start_y + row * (card_h + margin_y);
+                
+                if (touch.x >= x && touch.x < (x + card_w) &&
+                    touch.y >= y && touch.y < (y + card_h)) {
+                    touch.action_taken = 1;
+                    // Note: Will be processed on touch release for tap vs swipe detection
+                    return;
+                }
+                
+                card_index++;
+            }
         }
     }
 }
@@ -969,13 +988,12 @@ int main(void) {
     
     animation_target_state = current_state;
     
-    printf("📱 ENHANCED iOS Phone OS - DUAL HOME DETECTION! 🚀\n");
-    printf("✅ Quick tap detection - any red dot counts!\n");
-    printf("🎯 Dual home indicator detection:\n");
-    printf("   Method 1: Start touch in home indicator area\n");
-    printf("   Method 2: Enter home indicator during swipe\n");
-    printf("🏠 Home bars removed from PIN entry and home screen\n");
-    printf("⚡ Should work every time now!\n");
+    printf("📱 FIXED iOS Phone OS! 🔧\n");
+    printf("✅ Fixed button detection - one press per touch\n");
+    printf("🎯 Dual home indicator detection working\n");
+    printf("📌 PIN entry should work properly now\n");
+    printf("🏠 Home bars removed from PIN and home screens\n");
+    printf("⚡ Touch handling completely cleaned up!\n");
     
     while (1) {
         read_touch_events();
