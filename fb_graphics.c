@@ -637,6 +637,19 @@ void handle_touch_input(void) {
         return;
     }
     
+    // Second detection method: if started in home indicator and moved outside
+    if (touch.pressed && !touch.is_dragging_indicator && can_use_home_gesture(current_state)) {
+        if (is_touching_home_indicator(touch.start_x, touch.start_y) && 
+            !is_touching_home_indicator(touch.x, touch.y)) {
+            touch.is_dragging_indicator = 1;
+            touch.drag_start_y = touch.start_y;
+            touch.finger_x = touch.x;
+            touch.finger_y = touch.y;
+            printf("🎯 Home gesture via exit detection\n");
+            return;
+        }
+    }
+    
     // Handle touch release - complete gestures
     if (!touch.pressed && touch.last_pressed) {
         uint64_t touch_duration = get_time_ms() - touch.touch_start_time;
@@ -710,8 +723,8 @@ void handle_touch_input(void) {
         }
     }
     
-    // PRIORITY 4: Button handling (only when not in gesture mode and not already acted)
-    if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
+    // PRIORITY 4: Button handling - more lenient tap detection (immediate response)
+    if (touch.pressed && !touch.action_taken && !touch.is_dragging_indicator) {
     
     if (current_state == PIN_ENTRY) {
         char pin_labels[] = "123456789*0#";
