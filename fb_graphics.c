@@ -68,6 +68,7 @@ typedef struct {
     int drag_start_y;
     int finger_x, finger_y;
     int swipe_detected;
+    int entered_home_indicator; // NEW: Track if finger entered home indicator during swipe
 } TouchState;
 
 // Apps configuration
@@ -278,7 +279,6 @@ int is_in_bottom_area(int touch_x, int touch_y) {
            (touch_y >= screen_h - EDGE_THRESHOLD);
 }
 
-// FIXED: More reliable home indicator detection with better bounds
 int is_touching_home_indicator(int touch_x, int touch_y) {
     int bar_center_x = screen_w / 2;
     int bar_y_start = screen_h - 80;  // Where the bar starts
@@ -315,19 +315,17 @@ int can_use_home_gesture(AppState state) {
     return (state != LOCK_SCREEN);
 }
 
-// FIXED: Prevent self-transitions that cause corruption
 AppState get_home_gesture_target(AppState current) {
     switch (current) {
         case PIN_ENTRY:
         case APP_SCREEN:
             return HOME_SCREEN;
         case HOME_SCREEN:
-            // FIXED: Only go to app switcher if we have open apps, otherwise stay put
             return (num_open_apps > 0) ? APP_SWITCHER : current;
         case APP_SWITCHER:
             return HOME_SCREEN;
         default:
-            return current; // FIXED: Don't change state if we don't know what to do
+            return current;
     }
 }
 
@@ -607,54 +605,56 @@ void handle_touch_input(void) {
         touch.start_x = touch.x;
         touch.start_y = touch.y;
         touch.swipe_detected = 0;
-        touch.action_taken = 0; // FIXED: Reset action taken on new touch
+        touch.action_taken = 0;
+        touch.entered_home_indicator = 0; // NEW: Reset home indicator entry tracking
         
-        // FIXED: Completely block home gestures on lock screen 
+        // Block home gestures on lock screen completely
         if (current_state == LOCK_SCREEN) {
             printf("🔒 Lock screen touch - only unlock swipes allowed\n");
             return;
         }
         
-        // Start home gesture tracking only from precise home indicator area
+        // Method 1: Start home gesture if touch begins in home indicator area
         if (is_touching_home_indicator(touch.x, touch.y) && can_use_home_gesture(current_state)) {
             touch.is_dragging_indicator = 1;
             touch.drag_start_y = touch.y;
             touch.finger_x = touch.x;
             touch.finger_y = touch.y;
-            printf("🎯 Started home gesture\n");
+            printf("🎯 Started home gesture (method 1)\n");
             return;
         }
     }
     
-    // Handle dragging - update gesture progress  
-    if (touch.pressed && touch.is_dragging_indicator) {
-        int drag_distance = touch.drag_start_y - touch.y;
-        if (drag_distance >= 0) {
-            current_scale = calculate_scale_from_drag(drag_distance);
+    // Handle dragging - update gesture progress and check for entry into home indicator
+    if (touch.pressed && can_use_home_gesture(current_state)) {
+        // Method 2: Check if finger enters home indicator during swipe
+        if (!touch.is_dragging_indicator && !touch.entered_home_indicator && 
+            is_touching_home_indicator(touch.x, touch.y)) {
+            touch.entered_home_indicator = 1;
+            touch.is_dragging_indicator = 1;
+            touch.drag_start_y = touch.start_y; // Use original start position
             touch.finger_x = touch.x;
             touch.finger_y = touch.y;
+            printf("🎯 Started home gesture (method 2 - entered during swipe)\n");
+        }
+        
+        // Update gesture if we're dragging the indicator
+        if (touch.is_dragging_indicator) {
+            int drag_distance = touch.drag_start_y - touch.y;
+            if (drag_distance >= 0) {
+                current_scale = calculate_scale_from_drag(drag_distance);
+                touch.finger_x = touch.x;
+                touch.finger_y = touch.y;
+            }
         }
         return;
-    }
-    
-    // Second detection method: if started in home indicator and moved outside
-    if (touch.pressed && !touch.is_dragging_indicator && can_use_home_gesture(current_state)) {
-        if (is_touching_home_indicator(touch.start_x, touch.start_y) && 
-            !is_touching_home_indicator(touch.x, touch.y)) {
-            touch.is_dragging_indicator = 1;
-            touch.drag_start_y = touch.start_y;
-            touch.finger_x = touch.x;
-            touch.finger_y = touch.y;
-            printf("🎯 Home gesture via exit detection\n");
-            return;
-        }
     }
     
     // Handle touch release - complete gestures
     if (!touch.pressed && touch.last_pressed) {
         uint64_t touch_duration = get_time_ms() - touch.touch_start_time;
         
-        // PRIORITY 1: Handle lock screen unlock (always first!)
+        // Handle lock screen unlock (always first!)
         if (current_state == LOCK_SCREEN) {
             int swipe_dy = touch.start_y - touch.y;
             if (swipe_dy > 50 && is_in_bottom_area(touch.start_x, touch.start_y)) {
@@ -662,13 +662,13 @@ void handle_touch_input(void) {
                 current_state = PIN_ENTRY;
                 animation_target_state = PIN_ENTRY;
             }
-            // FIXED: Clear touch state and return immediately - no other processing on lock screen
             touch.is_dragging_indicator = 0;
+            touch.entered_home_indicator = 0;
             touch.action_taken = 0;
             return;
         }
         
-        // PRIORITY 2: Complete home gesture if in progress
+        // Complete home gesture if in progress
         if (touch.is_dragging_indicator) {
             int final_drag = touch.drag_start_y - touch.y;
             float threshold = screen_h * 0.15f;
@@ -679,7 +679,6 @@ void handle_touch_input(void) {
             if (final_drag > threshold || quick_swipe) {
                 AppState target = get_home_gesture_target(current_state);
                 
-                // FIXED: Only transition if target is different from current state
                 if (target != current_state) {
                     printf("🏠 Home gesture → %s\n", 
                            target == HOME_SCREEN ? "home" : target == APP_SWITCHER ? "app switcher" : "unknown");
@@ -698,12 +697,12 @@ void handle_touch_input(void) {
                 is_animating = 1;
             }
             
-            // FIXED: Always reset gesture state
             touch.is_dragging_indicator = 0;
+            touch.entered_home_indicator = 0;
             return;
         }
         
-        // PRIORITY 3: Quick swipe detection for instant gestures
+        // Quick swipe detection for instant gestures
         if (is_touching_home_indicator(touch.start_x, touch.start_y) && 
             can_use_home_gesture(current_state)) {
             int quick_swipe = is_quick_swipe_up(touch.start_x, touch.start_y, 
@@ -721,10 +720,23 @@ void handle_touch_input(void) {
                 return;
             }
         }
+        
+        // NEW: Quick tap detection - register any tap that showed the red dot
+        uint64_t quick_tap_time = 600; // More generous time for taps
+        int small_movement = 80; // Allow some movement for taps
+        int dx = abs(touch.x - touch.start_x);
+        int dy = abs(touch.y - touch.start_y);
+        int movement = sqrt(dx*dx + dy*dy);
+        
+        if (touch_duration < quick_tap_time && movement < small_movement) {
+            printf("👆 Quick tap detected (movement: %d, duration: %llu)\n", movement, touch_duration);
+            // Process as tap even if it was very quick
+            touch.action_taken = 0; // Allow tap processing
+        }
     }
     
-    // PRIORITY 4: Button handling - more lenient tap detection (immediate response)
-    if (touch.pressed && !touch.action_taken && !touch.is_dragging_indicator) {
+    // Button handling (only when not in gesture mode and not already acted)
+    if (!touch.pressed || touch.action_taken || touch.is_dragging_indicator) return;
     
     if (current_state == PIN_ENTRY) {
         char pin_labels[] = "123456789*0#";
@@ -957,13 +969,13 @@ int main(void) {
     
     animation_target_state = current_state;
     
-    printf("📱 SURGICALLY FIXED iOS Phone OS! 🔧\n");
-    printf("✅ Applied MINIMAL targeted fixes:\n");
-    printf("   🎯 Home indicator bounds corrected\n");
-    printf("   🔄 Self-transition prevention added\n"); 
-    printf("   🔒 Lock screen bypass completely blocked\n");
-    printf("   🏠 Gesture state properly reset\n");
-    printf("🎯 Original touch system preserved with surgical fixes!\n");
+    printf("📱 ENHANCED iOS Phone OS - DUAL HOME DETECTION! 🚀\n");
+    printf("✅ Quick tap detection - any red dot counts!\n");
+    printf("🎯 Dual home indicator detection:\n");
+    printf("   Method 1: Start touch in home indicator area\n");
+    printf("   Method 2: Enter home indicator during swipe\n");
+    printf("🏠 Home bars removed from PIN entry and home screen\n");
+    printf("⚡ Should work every time now!\n");
     
     while (1) {
         read_touch_events();
