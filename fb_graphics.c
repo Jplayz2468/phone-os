@@ -353,16 +353,20 @@ void draw_scaled_window(uint32_t *dest, uint32_t *src, float scale, int finger_x
     int scaled_w = (int)(screen_w * scale);
     int scaled_h = (int)(screen_h * scale);
     
+    // Position window so its bottom center is at the finger position
     int center_x = finger_x;
-    int center_y = finger_y;
+    int bottom_y = finger_y;
     
+    // Keep window on screen horizontally
     if (center_x - scaled_w/2 < 0) center_x = scaled_w/2;
     if (center_x + scaled_w/2 > screen_w) center_x = screen_w - scaled_w/2;
-    if (center_y - scaled_h/2 < 0) center_y = scaled_h/2;
-    if (center_y + scaled_h/2 > screen_h) center_y = screen_h - scaled_h/2;
+    
+    // Keep window on screen vertically (bottom anchored)
+    if (bottom_y - scaled_h < 0) bottom_y = scaled_h;
+    if (bottom_y > screen_h) bottom_y = screen_h;
     
     int start_x = center_x - scaled_w/2;
-    int start_y = center_y - scaled_h/2;
+    int start_y = bottom_y - scaled_h;
     
     for (int y = 0; y < scaled_h; y++) {
         int dest_y = start_y + y;
@@ -866,12 +870,16 @@ int main(void) {
             }
             
             if (touch.is_dragging_indicator) {
+                int scaled_h = (int)(screen_h * current_scale);
                 int bar_w = 240;
                 int bar_x = touch.finger_x - bar_w/2;
-                int bar_y = screen_h - 80;
+                int bar_y = touch.finger_y - 80; // Position relative to bottom of scaled window
                 
+                // Keep bar on screen
                 if (bar_x < 20) bar_x = 20;
                 if (bar_x + bar_w > screen_w - 20) bar_x = screen_w - 20 - bar_w;
+                if (bar_y < 0) bar_y = 0;
+                if (bar_y > screen_h - 24) bar_y = screen_h - 24;
                 
                 draw_rounded_rect(backbuffer, bar_x, bar_y, bar_w, 24, 12, COLOR_BLUE);
             }
