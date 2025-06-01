@@ -827,11 +827,15 @@ int main(void) {
                 case APP_SWITCHER: draw_app_switcher(backbuffer); break;
             }
         } else {
-            draw_home_screen(backbuffer);
-            
-            float blur_amount = (1.0f - current_scale) * 0.5f;
-            if (blur_amount > 0.1f) {
-                apply_fast_blur(backbuffer, blur_amount);
+            // Render target state as background (don't blur home screen)
+            if (animation_target_state == HOME_SCREEN) {
+                draw_home_screen(backbuffer);
+            } else {
+                draw_home_screen(backbuffer);
+                float blur_amount = (1.0f - current_scale) * 0.5f;
+                if (blur_amount > 0.1f) {
+                    apply_fast_blur(backbuffer, blur_amount);
+                }
             }
             
             switch (current_state) {
