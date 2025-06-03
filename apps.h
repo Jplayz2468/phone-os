@@ -2,11 +2,13 @@
 #define APPS_H
 
 #include <stdint.h>
-#include "stb_truetype.h"
+
+// Forward declaration only - no implementation
+struct stbtt_fontinfo;
 
 // Forward declarations for graphics functions
 extern int screen_w, screen_h;
-extern stbtt_fontinfo font;
+extern struct stbtt_fontinfo font;
 
 // Graphics function prototypes that apps can use
 void clear_screen(uint32_t *buf, uint32_t color);
@@ -54,4 +56,4 @@ void draw_safari_app(uint32_t *buf);
 typedef void (*AppDrawFunction)(uint32_t *buf);
 extern AppDrawFunction app_draw_functions[12];
 
-#endif // APPS_Hs
+#endif // APPS_H
