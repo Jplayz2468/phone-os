@@ -39,18 +39,7 @@ void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, u
 #define MARGIN 60
 
 // App drawing function prototypes
-void draw_phone_app(uint32_t *buf);
-void draw_messages_app(uint32_t *buf);
-void draw_camera_app(uint32_t *buf);
-void draw_photos_app(uint32_t *buf);
-void draw_settings_app(uint32_t *buf);
-void draw_calculator_app(uint32_t *buf);
-void draw_clock_app(uint32_t *buf);
-void draw_weather_app(uint32_t *buf);
-void draw_maps_app(uint32_t *buf);
-void draw_music_app(uint32_t *buf);
-void draw_mail_app(uint32_t *buf);
-void draw_safari_app(uint32_t *buf);
+void draw_test_app(uint32_t *buf);
 
 // App drawing function pointer array
 typedef void (*AppDrawFunction)(uint32_t *buf);
