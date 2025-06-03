@@ -14,25 +14,9 @@
 #include <math.h>
 #include <time.h>
 #include <signal.h>
+#include "apps.h"
 
 #define FONT_PATH "phone-os/Inter-Regular.otf"
-#define COLOR_BG 0xFF000000
-#define COLOR_WHITE 0xFFFFFFFF
-#define COLOR_GRAY 0xFF666666
-#define COLOR_LIGHT_GRAY 0xFFAAAAAA
-#define COLOR_BLUE 0xFF007AFF
-#define COLOR_GREEN 0xFF34C759
-#define COLOR_RED 0xFFFF3B30
-#define COLOR_ORANGE 0xFFFF9500
-#define COLOR_PURPLE 0xFFAF52DE
-
-// UI scaling for 1080p
-#define STATUS_HEIGHT 140
-#define LARGE_TEXT 96
-#define MEDIUM_TEXT 64
-#define SMALL_TEXT 48
-#define ICON_SIZE 200
-#define MARGIN 60
 
 // Enhanced touch constants
 #define SWIPE_THRESHOLD 100
@@ -75,6 +59,13 @@ App apps[] = {
 };
 #define APP_COUNT (sizeof(apps)/sizeof(apps[0]))
 
+// App drawing function array
+AppDrawFunction app_draw_functions[12] = {
+    draw_phone_app, draw_messages_app, draw_camera_app, draw_photos_app,
+    draw_settings_app, draw_calculator_app, draw_clock_app, draw_weather_app,
+    draw_maps_app, draw_music_app, draw_mail_app, draw_safari_app
+};
+
 // Global variables
 uint32_t *framebuffer = NULL, *backbuffer = NULL, *app_buffer = NULL;
 int fb_fd, screen_w, screen_h, stride;
@@ -96,13 +87,6 @@ int num_open_apps = 0;
 
 // Function declarations
 uint64_t get_time_ms(void);
-void clear_screen(uint32_t *buf, uint32_t color);
-void draw_rect(uint32_t *buf, int x, int y, int w, int h, uint32_t color);
-void draw_circle_filled(uint32_t *buf, int cx, int cy, int radius, uint32_t color);
-void draw_rounded_rect(uint32_t *buf, int x, int y, int w, int h, int radius, uint32_t color);
-int measure_text_width(const char *text, int font_size);
-void draw_text(uint32_t *buf, const char *text, int font_size, int x, int y, uint32_t color);
-void draw_text_centered(uint32_t *buf, const char *text, int font_size, int y, uint32_t color);
 void get_current_time(char *time_str, char *date_str);
 void draw_status_bar(uint32_t *buf);
 int is_touching_home_indicator(int touch_x, int touch_y);
@@ -424,28 +408,9 @@ void draw_app_screen(uint32_t *buf) {
         
         draw_text_centered(buf, app->name, LARGE_TEXT, STATUS_HEIGHT + 50, COLOR_WHITE);
         
-        if (current_app == 5) { // Calculator
-            draw_text_centered(buf, "0", LARGE_TEXT * 2, STATUS_HEIGHT + 200, COLOR_WHITE);
-            
-            char calc_btns[] = "789+456-123*C0=";
-            int calc_start_x = screen_w/2 - 320;
-            int calc_start_y = STATUS_HEIGHT + 350;
-            
-            for (int i = 0; i < 16; i++) {
-                int row = i / 4;
-                int col = i % 4;
-                int x = calc_start_x + col * 160;
-                int y = calc_start_y + row * 120;
-                
-                uint32_t btn_color = (col == 3) ? COLOR_ORANGE : COLOR_GRAY;
-                draw_rounded_rect(buf, x, y, 140, 100, 20, btn_color);
-                
-                char btn_text[2] = {calc_btns[i], 0};
-                int text_w = measure_text_width(btn_text, MEDIUM_TEXT);
-                draw_text(buf, btn_text, MEDIUM_TEXT, x + 70 - text_w/2, y + 30, COLOR_WHITE);
-            }
-        } else {
-            draw_text_centered(buf, "App Content", MEDIUM_TEXT, STATUS_HEIGHT + 200, COLOR_GRAY);
+        // Call the appropriate app's draw function
+        if (app_draw_functions[current_app]) {
+            app_draw_functions[current_app](buf);
         }
     }
     
