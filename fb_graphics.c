@@ -52,18 +52,13 @@ typedef struct {
 
 // Apps configuration
 App apps[] = {
-    {"Phone", COLOR_GREEN, 0}, {"Messages", COLOR_GREEN, 1}, {"Camera", COLOR_GRAY, 2},
-    {"Photos", COLOR_BLUE, 3}, {"Settings", COLOR_LIGHT_GRAY, 4}, {"Calculator", COLOR_ORANGE, 5},
-    {"Clock", COLOR_PURPLE, 6}, {"Weather", COLOR_BLUE, 7}, {"Maps", COLOR_GREEN, 8},
-    {"Music", COLOR_RED, 9}, {"Mail", COLOR_BLUE, 10}, {"Safari", COLOR_BLUE, 11}
+    {"Test", COLOR_GREEN, 0}
 };
 #define APP_COUNT (sizeof(apps)/sizeof(apps[0]))
 
 // App drawing function array
 AppDrawFunction app_draw_functions[12] = {
-    draw_phone_app, draw_messages_app, draw_camera_app, draw_photos_app,
-    draw_settings_app, draw_calculator_app, draw_clock_app, draw_weather_app,
-    draw_maps_app, draw_music_app, draw_mail_app, draw_safari_app
+    draw_test_app
 };
 
 // Global variables
