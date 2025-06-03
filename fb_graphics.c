@@ -16,7 +16,7 @@
 #include <signal.h>
 #include "apps.h"
 
-#define FONT_PATH "phone-os/Inter-Regular.otf"
+#define FONT_PATH "Inter-Regular.otf"
 
 // Enhanced touch constants
 #define SWIPE_THRESHOLD 100
