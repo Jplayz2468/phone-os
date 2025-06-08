@@ -2,11 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 // Global state for the test app
 static char ping_result[256] = "Press button to ping example.org";
-static int button_pressed = 0;
 static int ping_in_progress = 0;
 
 // Button dimensions and position
@@ -23,58 +21,21 @@ int is_touching_ping_button(int touch_x, int touch_y) {
             touch_y <= BUTTON_Y + BUTTON_HEIGHT);
 }
 
-// Function to perform ping (non-blocking)
-void perform_ping(void) {
-    if (ping_in_progress) return;
-    
-    ping_in_progress = 1;
-    strcpy(ping_result, "Pinging example.org...");
-    
-    // Fork a child process to perform the ping
-    pid_t pid = fork();
-    if (pid == 0) {
-        // Child process - execute ping
-        int result = system("ping -c 1 -W 1 example.org > /dev/null 2>&1");
-        exit(result == 0 ? 0 : 1);
-    } else if (pid > 0) {
-        // Parent process - we'll check the result later
-        // For now, just set a simple result
-        sleep(1); // Brief delay to simulate ping
-        int status;
-        if (waitpid(pid, &status, WNOHANG) == 0) {
-            // Still running, we'll update result
-            if (WEXITSTATUS(status) == 0) {
-                strcpy(ping_result, "✓ example.org is reachable!");
-            } else {
-                strcpy(ping_result, "✗ example.org is not reachable");
-            }
-        } else {
-            // Quick result
-            strcpy(ping_result, "✓ Ping completed successfully!");
-        }
-    } else {
-        // Fork failed
-        strcpy(ping_result, "✗ Failed to start ping");
-    }
-    
-    ping_in_progress = 0;
-}
-
-// Simplified ping function using system command
+// Simple ping function
 void simple_ping(void) {
     if (ping_in_progress) return;
     
     ping_in_progress = 1;
-    strcpy(ping_result, "Pinging example.org...");
     
-    // Use system command for simplicity
-    int result = system("ping -c 1 -W 2 example.org > /dev/null 2>&1");
+    // Use system command for ping
+    int result = system("ping -c 1 -W 1 example.org >/dev/null 2>&1");
     
     if (result == 0) {
-        strcpy(ping_result, "✓ example.org is reachable!");
+        strncpy(ping_result, "example.org is reachable!", sizeof(ping_result) - 1);
     } else {
-        strcpy(ping_result, "✗ example.org is not reachable");
+        strncpy(ping_result, "example.org is not reachable", sizeof(ping_result) - 1);
     }
+    ping_result[sizeof(ping_result) - 1] = '\0';
     
     ping_in_progress = 0;
 }
@@ -102,9 +63,8 @@ void draw_test_app(uint32_t *buf) {
 }
 
 // Function to handle touch input for the test app
-// You'll need to call this from your main touch handling code
 void handle_test_app_touch(int touch_x, int touch_y, int is_pressed, int was_pressed) {
-    // Button press detection
+    // Button press detection - only trigger on press down, not while held
     if (is_pressed && !was_pressed && is_touching_ping_button(touch_x, touch_y)) {
         if (!ping_in_progress) {
             simple_ping();
