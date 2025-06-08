@@ -100,6 +100,7 @@ void handle_touch_input(void);
 void init_touch_devices(void);
 void read_touch_events(void);
 void cleanup_and_exit(int sig);
+void handle_test_app_touch(int touch_x, int touch_y, int is_pressed, int was_pressed);
 
 uint64_t get_time_ms(void) {
     struct timespec ts;
@@ -653,6 +654,12 @@ void handle_touch_input(void) {
             
             card_index++;
         }
+    } else if (current_state == APP_SCREEN && current_app >= 0) {
+        // Handle app-specific touch input
+        if (current_app == 0) { // Test app
+            handle_test_app_touch(touch.x, touch.y, touch.pressed, touch.last_pressed);
+        }
+        // Add other app touch handlers here as needed
     }
 }
 
